@@ -8,8 +8,12 @@ import (
 
 	"smarthome/models"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+const sensorColumns = `id, device_id::text, name, type, location, value, unit, status, last_updated, created_at`
 
 // DB represents the database connection
 type DB struct {
@@ -28,7 +32,23 @@ func New(connString string) (*DB, error) {
 		return nil, fmt.Errorf("unable to ping database: %w", err)
 	}
 
-	return &DB{Pool: pool}, nil
+	db := &DB{Pool: pool}
+	if err := db.migrate(context.Background()); err != nil {
+		return nil, err
+	}
+	return db, nil
+}
+
+// migrate adds device_id: the UUID under which the sensor is known to the new microservices.
+func (db *DB) migrate(ctx context.Context) error {
+	_, err := db.Pool.Exec(ctx, `
+		ALTER TABLE sensors ADD COLUMN IF NOT EXISTS device_id UUID UNIQUE;
+		UPDATE sensors SET device_id = gen_random_uuid() WHERE device_id IS NULL;
+	`)
+	if err != nil {
+		return fmt.Errorf("error migrating sensors table: %w", err)
+	}
+	return nil
 }
 
 // Close closes the database connection
@@ -38,13 +58,26 @@ func (db *DB) Close() {
 	}
 }
 
+func scanSensor(row pgx.Row) (models.Sensor, error) {
+	var s models.Sensor
+	err := row.Scan(
+		&s.ID,
+		&s.DeviceID,
+		&s.Name,
+		&s.Type,
+		&s.Location,
+		&s.Value,
+		&s.Unit,
+		&s.Status,
+		&s.LastUpdated,
+		&s.CreatedAt,
+	)
+	return s, err
+}
+
 // GetSensors retrieves all sensors from the database
 func (db *DB) GetSensors(ctx context.Context) ([]models.Sensor, error) {
-	query := `
-		SELECT id, name, type, location, value, unit, status, last_updated, created_at
-		FROM sensors
-		ORDER BY id
-	`
+	query := `SELECT ` + sensorColumns + ` FROM sensors ORDER BY id`
 
 	rows, err := db.Pool.Query(ctx, query)
 	if err != nil {
@@ -54,18 +87,7 @@ func (db *DB) GetSensors(ctx context.Context) ([]models.Sensor, error) {
 
 	var sensors []models.Sensor
 	for rows.Next() {
-		var s models.Sensor
-		err := rows.Scan(
-			&s.ID,
-			&s.Name,
-			&s.Type,
-			&s.Location,
-			&s.Value,
-			&s.Unit,
-			&s.Status,
-			&s.LastUpdated,
-			&s.CreatedAt,
-		)
+		s, err := scanSensor(rows)
 		if err != nil {
 			return nil, fmt.Errorf("error scanning sensor row: %w", err)
 		}
@@ -81,24 +103,9 @@ func (db *DB) GetSensors(ctx context.Context) ([]models.Sensor, error) {
 
 // GetSensorByID retrieves a sensor by its ID
 func (db *DB) GetSensorByID(ctx context.Context, id int) (models.Sensor, error) {
-	query := `
-		SELECT id, name, type, location, value, unit, status, last_updated, created_at
-		FROM sensors
-		WHERE id = $1
-	`
+	query := `SELECT ` + sensorColumns + ` FROM sensors WHERE id = $1`
 
-	var s models.Sensor
-	err := db.Pool.QueryRow(ctx, query, id).Scan(
-		&s.ID,
-		&s.Name,
-		&s.Type,
-		&s.Location,
-		&s.Value,
-		&s.Unit,
-		&s.Status,
-		&s.LastUpdated,
-		&s.CreatedAt,
-	)
+	s, err := scanSensor(db.Pool.QueryRow(ctx, query, id))
 	if err != nil {
 		return models.Sensor{}, fmt.Errorf("error getting sensor by ID: %w", err)
 	}
@@ -109,30 +116,19 @@ func (db *DB) GetSensorByID(ctx context.Context, id int) (models.Sensor, error) 
 // CreateSensor creates a new sensor in the database
 func (db *DB) CreateSensor(ctx context.Context, s models.SensorCreate) (models.Sensor, error) {
 	query := `
-		INSERT INTO sensors (name, type, location, unit, status, last_updated, created_at)
-		VALUES ($1, $2, $3, $4, 'inactive', $5, $5)
-		RETURNING id, name, type, location, value, unit, status, last_updated, created_at
-	`
+		INSERT INTO sensors (device_id, name, type, location, unit, status, last_updated, created_at)
+		VALUES ($1::uuid, $2, $3, $4, $5, 'inactive', $6, $6)
+		RETURNING ` + sensorColumns
 
 	now := time.Now()
-	var sensor models.Sensor
-	err := db.Pool.QueryRow(ctx, query,
+	sensor, err := scanSensor(db.Pool.QueryRow(ctx, query,
+		uuid.NewString(),
 		s.Name,
 		s.Type,
 		s.Location,
 		s.Unit,
 		now,
-	).Scan(
-		&sensor.ID,
-		&sensor.Name,
-		&sensor.Type,
-		&sensor.Location,
-		&sensor.Value,
-		&sensor.Unit,
-		&sensor.Status,
-		&sensor.LastUpdated,
-		&sensor.CreatedAt,
-	)
+	))
 	if err != nil {
 		return models.Sensor{}, fmt.Errorf("error creating sensor: %w", err)
 	}
@@ -190,22 +186,10 @@ func (db *DB) UpdateSensor(ctx context.Context, id int, s models.SensorUpdate) (
 	}
 
 	// Add the WHERE clause and RETURNING clause
-	query += ` WHERE id = $` + fmt.Sprintf("%d", argCount) + `
-		RETURNING id, name, type, location, value, unit, status, last_updated, created_at`
+	query += fmt.Sprintf(" WHERE id = $%d RETURNING %s", argCount, sensorColumns)
 	args = append(args, id)
 
-	var sensor models.Sensor
-	err = db.Pool.QueryRow(ctx, query, args...).Scan(
-		&sensor.ID,
-		&sensor.Name,
-		&sensor.Type,
-		&sensor.Location,
-		&sensor.Value,
-		&sensor.Unit,
-		&sensor.Status,
-		&sensor.LastUpdated,
-		&sensor.CreatedAt,
-	)
+	sensor, err := scanSensor(db.Pool.QueryRow(ctx, query, args...))
 	if err != nil {
 		return models.Sensor{}, fmt.Errorf("error updating sensor: %w", err)
 	}

@@ -1,0 +1,47 @@
+@startuml C4_Component_Scenario_Service
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Диаграмма компонентов — Scenario Service (Kotlin / Spring Boot)
+
+Container(api_gateway, "API Gateway", "Kong", "Запросы пользователей")
+Container(device_service, "Device Management Service", "Kotlin", "Единая точка отправки команд")
+ContainerQueue(broker, "Message Broker", "RabbitMQ", "telemetry.normalized, device.events, notifications")
+ContainerDb(scenario_db, "Scenario DB", "PostgreSQL", "Сценарии, триггеры, действия, журнал")
+ContainerDb(redis, "Cache", "Redis", "Индекс активных триггеров")
+
+Container_Boundary(scenario_service, "Scenario Service") {
+    Component(rest_api, "Scenario REST API", "Spring MVC", "CRUD сценариев, включение/выключение, журнал срабатываний")
+    Component(validator, "Scenario Validator", "Kotlin", "Проверка триггеров и действий, прав на устройства")
+    Component(repository, "Scenario Repository", "Spring Data JPA", "Сценарии: триггеры (порог / событие / время) и действия")
+    Component(event_consumer, "Event Consumer", "Spring AMQP", "Читает telemetry.normalized и device.events")
+    Component(scheduler, "Time Trigger Scheduler", "Spring Scheduler", "Запускает сценарии с триггером по времени")
+    Component(trigger_index, "Trigger Index", "Kotlin + Redis", "Быстрый поиск активных сценариев по device_id и метрике")
+    Component(rule_engine, "Rule Engine", "Kotlin", "Проверяет условия, защищает от зацикливания и дребезга")
+    Component(action_executor, "Action Executor", "Kotlin", "Выполняет действия: команда устройству, уведомление")
+    Component(device_client, "Device Command Client", "REST-клиент", "Отправляет команды через Device Management Service")
+    Component(notification_publisher, "Notification Publisher", "Spring AMQP", "Публикует notifications")
+    Component(execution_log, "Execution Log", "Kotlin", "Журнал срабатываний и результатов")
+}
+
+Rel(api_gateway, rest_api, "Вызывает", "REST / JSON")
+Rel(rest_api, validator, "Проверить")
+Rel(rest_api, repository, "CRUD")
+Rel(rest_api, execution_log, "Журнал")
+Rel(repository, trigger_index, "Обновляет индекс")
+Rel(event_consumer, rule_engine, "События")
+Rel(scheduler, rule_engine, "Срабатывание по времени")
+Rel(rule_engine, trigger_index, "Ищет сценарии")
+Rel(rule_engine, action_executor, "Действия")
+Rel(action_executor, device_client, "Команда")
+Rel(action_executor, notification_publisher, "Уведомление")
+Rel(action_executor, execution_log, "Результат")
+Rel(device_client, device_service, "POST /devices/{id}/commands", "REST")
+Rel(trigger_index, redis, "Читает/пишет")
+Rel(repository, scenario_db, "SQL")
+Rel(execution_log, scenario_db, "SQL")
+Rel(broker, event_consumer, "telemetry.normalized, device.events", "AMQP")
+Rel(notification_publisher, broker, "notifications", "AMQP")
+
+@enduml

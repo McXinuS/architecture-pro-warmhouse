@@ -1,0 +1,59 @@
+@startuml C4_Component_Device_Gateway
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Диаграмма компонентов — Device Gateway (Kotlin + встроенный HiveMQ CE)
+
+System_Ext(partner_devices, "Устройства и датчики", "MQTT / HTTP / Zigbee-хаб")
+ContainerQueue(broker, "Message Broker", "RabbitMQ", "telemetry.raw, device.events, device.commands")
+Container(device_service, "Device Management Service", "Kotlin", "Учётные данные устройств")
+
+Container_Boundary(device_gateway, "Device Gateway (один JVM-процесс)") {
+    Component(hivemq, "Embedded HiveMQ CE", "hivemq-community-edition-embedded", "MQTT 3.1.1 / 5 брокер внутри процесса, TLS")
+    Component(auth_ext, "Device Authenticator", "HiveMQ Extension SDK", "Проверяет логин/пароль MQTT-клиента через Device Management Service, ограничивает топики устройства")
+    Component(lifecycle_ext, "Connection Listener", "HiveMQ Extension SDK", "События подключения/отключения клиента → online/offline")
+    Component(publish_ext, "Publish Interceptor", "HiveMQ Extension SDK", "Перехватывает входящие сообщения устройств")
+    Component(http_ingest, "HTTP Ingest Endpoint", "Ktor", "Приём данных от устройств без MQTT")
+    Component(adapter_registry, "Protocol Adapter Registry", "Kotlin", "Выбирает адаптер по типу устройства; новые форматы добавляются новым адаптером")
+    Component(mqtt_adapter, "Generic MQTT Adapter", "Kotlin", "Стандартные JSON-сообщения")
+    Component(zigbee_adapter, "Zigbee Hub Adapter", "Kotlin", "Сообщения Zigbee-хабов")
+    Component(partner_adapter, "Partner HTTP Adapter", "Kotlin", "Форматы устройств партнёров")
+    Component(mapper, "Canonical Message Mapper", "Kotlin", "Единый формат: device_id, metric, value, unit, ts")
+    Component(amqp_publisher, "AMQP Publisher", "Spring AMQP", "Публикует telemetry.raw и device.events")
+    Component(command_consumer, "Command Consumer", "Spring AMQP", "Читает очередь device.commands")
+    Component(command_dispatcher, "Command Dispatcher", "Kotlin", "Отправляет команду в топик устройства через PublishService HiveMQ, ждёт подтверждение, повторяет при таймауте")
+}
+
+Rel(partner_devices, hivemq, "Публикуют данные, подписаны на команды", "MQTT over TLS")
+Rel(partner_devices, http_ingest, "Отправляют данные", "HTTPS")
+Rel(hivemq, auth_ext, "Подключение клиента")
+Rel(hivemq, lifecycle_ext, "Подключение / отключение")
+Rel(hivemq, publish_ext, "Входящие сообщения")
+Rel(auth_ext, device_service, "Проверка учётных данных", "REST")
+Rel(publish_ext, adapter_registry, "Сообщение")
+Rel(http_ingest, adapter_registry, "Сообщение")
+Rel(adapter_registry, mqtt_adapter, "Использует")
+Rel(adapter_registry, zigbee_adapter, "Использует")
+Rel(adapter_registry, partner_adapter, "Использует")
+Rel(mqtt_adapter, mapper, "Данные")
+Rel(zigbee_adapter, mapper, "Данные")
+Rel(partner_adapter, mapper, "Данные")
+Rel(mapper, amqp_publisher, "Каноничные сообщения")
+Rel(lifecycle_ext, amqp_publisher, "online / offline")
+Rel(amqp_publisher, broker, "telemetry.raw, device.events", "AMQP")
+Rel(broker, command_consumer, "device.commands", "AMQP")
+Rel(command_consumer, command_dispatcher, "Команда")
+Rel(command_dispatcher, hivemq, "Публикует в топик устройства")
+Rel(command_dispatcher, amqp_publisher, "Результат выполнения команды")
+
+note right of hivemq
+  HiveMQ CE не поддерживает кластеризацию.
+  Каждый экземпляр Gateway — отдельный брокер,
+  поэтому при масштабировании устройства
+  распределяются по экземплярам (например, по домам),
+  а команды маршрутизируются в нужный экземпляр.
+  Для MVP достаточно одного экземпляра.
+end note
+
+@enduml

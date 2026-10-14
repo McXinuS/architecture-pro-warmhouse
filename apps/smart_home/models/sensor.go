@@ -14,6 +14,7 @@ const (
 // Sensor represents a smart home sensor
 type Sensor struct {
 	ID          int        `json:"id"`
+	DeviceID    *string    `json:"device_id"`
 	Name        string     `json:"name"`
 	Type        SensorType `json:"type"`
 	Location    string     `json:"location"`

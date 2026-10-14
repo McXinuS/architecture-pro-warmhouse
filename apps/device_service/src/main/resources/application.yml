@@ -1,0 +1,25 @@
+server:
+  port: 8082
+
+spring:
+  application:
+    name: device-service
+  mvc:
+    problemdetails:
+      enabled: true
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/devices}
+    username: ${DB_USER:postgres}
+    password: ${DB_PASSWORD:postgres}
+  sql:
+    init:
+      mode: always
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: 5672
+    username: ${RABBITMQ_USER:warmhouse}
+    password: ${RABBITMQ_PASSWORD:warmhouse}
+    listener:
+      simple:
+        # A message that fails to process is dropped instead of being redelivered forever.
+        default-requeue-rejected: false

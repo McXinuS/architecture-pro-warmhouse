@@ -1,0 +1,308 @@
+asyncapi: 3.0.0
+info:
+  title: Warmhouse Device MQTT Contract
+  version: 1.0.0
+  description: |
+    Контракт подключения устройств к экосистеме «Тёплый дом» по MQTT. Документ описывает
+    **устройство**: что оно отправляет и что получает. По этому контракту партнёры подключают
+    свои устройства без доработки платформы; новые типы регистрируются через
+    `POST /device-types` в Device Management Service.
+
+    Подключение:
+    - брокер — HiveMQ CE, встроенный в Device Gateway;
+    - TLS обязателен, логин и пароль выдаются при подключении устройства (`POST /devices/onboarding`);
+    - `clientId` должен совпадать с выданным;
+    - устройство может публиковать и подписываться только на топики со своим префиксом
+      `houses/{houseId}/devices/{deviceId}/`;
+    - при подключении устройство задаёт Last Will в топик `availability` с payload `{"status":"offline"}`
+      (QoS 1, retain), а сразу после подключения публикует туда `{"status":"online"}`.
+defaultContentType: application/json
+
+servers:
+  production:
+    host: mqtt.warmhouse.example:8883
+    protocol: secure-mqtt
+    protocolVersion: '5'
+    description: Device Gateway (встроенный HiveMQ CE)
+    security:
+      - $ref: '#/components/securitySchemes/deviceCredentials'
+    bindings:
+      mqtt:
+        cleanSession: false
+        keepAlive: 60
+        bindingVersion: 0.2.0
+
+channels:
+  telemetry:
+    address: houses/{houseId}/devices/{deviceId}/telemetry
+    description: Показания датчиков
+    parameters:
+      houseId:
+        $ref: '#/components/parameters/houseId'
+      deviceId:
+        $ref: '#/components/parameters/deviceId'
+    messages:
+      telemetry:
+        $ref: '#/components/messages/Telemetry'
+
+  state:
+    address: houses/{houseId}/devices/{deviceId}/state
+    description: Текущее состояние исполнительного устройства (retain)
+    parameters:
+      houseId:
+        $ref: '#/components/parameters/houseId'
+      deviceId:
+        $ref: '#/components/parameters/deviceId'
+    messages:
+      state:
+        $ref: '#/components/messages/State'
+
+  availability:
+    address: houses/{houseId}/devices/{deviceId}/availability
+    description: Онлайн/офлайн устройства (retain, Last Will)
+    parameters:
+      houseId:
+        $ref: '#/components/parameters/houseId'
+      deviceId:
+        $ref: '#/components/parameters/deviceId'
+    messages:
+      availability:
+        $ref: '#/components/messages/Availability'
+
+  commands:
+    address: houses/{houseId}/devices/{deviceId}/commands
+    description: Команды устройству от платформы
+    parameters:
+      houseId:
+        $ref: '#/components/parameters/houseId'
+      deviceId:
+        $ref: '#/components/parameters/deviceId'
+    messages:
+      command:
+        $ref: '#/components/messages/Command'
+
+  commandAck:
+    address: houses/{houseId}/devices/{deviceId}/commands/ack
+    description: Результат выполнения команды
+    parameters:
+      houseId:
+        $ref: '#/components/parameters/houseId'
+      deviceId:
+        $ref: '#/components/parameters/deviceId'
+    messages:
+      commandAck:
+        $ref: '#/components/messages/CommandAck'
+
+operations:
+  sendTelemetry:
+    action: send
+    channel:
+      $ref: '#/channels/telemetry'
+    summary: Устройство публикует показания
+    description: |
+      Датчики публикуют показания периодически (рекомендуется не чаще раза в 10 секунд)
+      и при значимом изменении. Метрики должны быть описаны в типе устройства.
+    messages:
+      - $ref: '#/channels/telemetry/messages/telemetry'
+    bindings:
+      mqtt:
+        qos: 1
+        retain: false
+        bindingVersion: 0.2.0
+
+  sendState:
+    action: send
+    channel:
+      $ref: '#/channels/state'
+    summary: Устройство публикует своё состояние
+    description: После включения и при любом изменении состояния (в том числе после ручного переключения).
+    messages:
+      - $ref: '#/channels/state/messages/state'
+    bindings:
+      mqtt:
+        qos: 1
+        retain: true
+        bindingVersion: 0.2.0
+
+  sendAvailability:
+    action: send
+    channel:
+      $ref: '#/channels/availability'
+    summary: Устройство сообщает, что оно онлайн или офлайн
+    description: |
+      `online` — сразу после подключения. `offline` публикует брокер от имени устройства (Last Will)
+      при обрыве связи, либо само устройство при штатном отключении.
+    messages:
+      - $ref: '#/channels/availability/messages/availability'
+    bindings:
+      mqtt:
+        qos: 1
+        retain: true
+        bindingVersion: 0.2.0
+
+  receiveCommand:
+    action: receive
+    channel:
+      $ref: '#/channels/commands'
+    summary: Устройство получает команду
+    description: |
+      Устройство подписывается на топик сразу после подключения. Команду с истёкшим `expiresAt`
+      выполнять не нужно — достаточно ответить `status: rejected`. Повторная доставка той же команды
+      (тот же `commandId`) не должна выполняться повторно.
+    messages:
+      - $ref: '#/channels/commands/messages/command'
+    bindings:
+      mqtt:
+        qos: 1
+        bindingVersion: 0.2.0
+
+  sendCommandAck:
+    action: send
+    channel:
+      $ref: '#/channels/commandAck'
+    summary: Устройство сообщает результат выполнения команды
+    description: Ответ нужно отправить в течение 30 секунд, иначе платформа переведёт команду в статус `TIMED_OUT`.
+    messages:
+      - $ref: '#/channels/commandAck/messages/commandAck'
+    bindings:
+      mqtt:
+        qos: 1
+        retain: false
+        bindingVersion: 0.2.0
+
+components:
+  securitySchemes:
+    deviceCredentials:
+      type: userPassword
+      description: Логин и пароль из ответа `POST /devices/onboarding`; соединение только по TLS
+
+  parameters:
+    houseId:
+      description: UUID дома
+      examples: [6f1c2a9e-1b8e-4a57-9b0e-3a6d2b7c1f10]
+    deviceId:
+      description: UUID устройства, выданный при подключении
+      examples: [3d9a7b52-4c1e-4f8a-9b6d-2e7f1a0c5b84]
+
+  messages:
+    Telemetry:
+      name: Telemetry
+      title: Показания
+      payload:
+        type: object
+        required: [metrics]
+        properties:
+          ts:
+            type: string
+            format: date-time
+            description: Время измерения; если нет — используется время приёма
+          metrics:
+            type: object
+            description: Метрика → значение. Единицы — из описания типа устройства
+            additionalProperties: { type: number }
+      examples:
+        - name: temperatureSensor
+          payload:
+            ts: '2026-10-14T12:05:00Z'
+            metrics: { temperature: 16.5, humidity: 43, battery: 87 }
+
+    State:
+      name: State
+      title: Состояние
+      payload:
+        type: object
+        required: [state]
+        properties:
+          ts: { type: string, format: date-time }
+          state:
+            type: object
+            additionalProperties: true
+      examples:
+        - name: relayOn
+          summary: Реле котла включено
+          payload:
+            ts: '2026-10-14T12:10:02Z'
+            state: { power: 'on' }
+        - name: gateOpen
+          summary: Ворота открыты
+          payload:
+            ts: '2026-10-14T18:30:12Z'
+            state: { position: open, obstacle: false }
+
+    Availability:
+      name: Availability
+      title: Доступность
+      payload:
+        type: object
+        required: [status]
+        properties:
+          status: { type: string, enum: [online, offline] }
+          firmwareVersion: { type: string }
+      examples:
+        - name: online
+          payload: { status: online, firmwareVersion: 2.4.1 }
+        - name: lastWill
+          summary: Payload Last Will
+          payload: { status: offline }
+
+    Command:
+      name: Command
+      title: Команда
+      correlationId:
+        location: $message.payload#/commandId
+      payload:
+        type: object
+        required: [commandId, name, params, expiresAt]
+        properties:
+          commandId: { type: string, format: uuid }
+          name:
+            type: string
+            description: Имя команды из возможностей типа устройства
+          params: { type: object, additionalProperties: true }
+          expiresAt: { type: string, format: date-time }
+      examples:
+        - name: turnOn
+          payload:
+            commandId: c1f4e8a2-6b3d-4e7f-9a0b-1c2d3e4f5a6b
+            name: turn_on
+            params: {}
+            expiresAt: '2026-10-14T12:10:30Z'
+        - name: setBrightness
+          payload:
+            commandId: 1e2d3c4b-5a69-4788-9a0b-c1d2e3f4a5b6
+            name: set_brightness
+            params: { brightness: 70 }
+            expiresAt: '2026-10-14T19:00:30Z'
+
+    CommandAck:
+      name: CommandAck
+      title: Результат команды
+      correlationId:
+        location: $message.payload#/commandId
+      payload:
+        type: object
+        required: [commandId, status]
+        properties:
+          commandId: { type: string, format: uuid }
+          status:
+            type: string
+            enum: [ok, error, rejected]
+            description: rejected — команда истекла или не поддерживается
+          error: { type: string }
+          state:
+            type: object
+            additionalProperties: true
+            description: Состояние после выполнения
+      examples:
+        - name: ok
+          payload:
+            commandId: c1f4e8a2-6b3d-4e7f-9a0b-1c2d3e4f5a6b
+            status: ok
+            state: { power: 'on' }
+        - name: obstacle
+          summary: Ворота не закрылись — препятствие
+          payload:
+            commandId: 6d5c4b3a-2f1e-4d0c-9b8a-7f6e5d4c3b2a
+            status: error
+            error: obstacle_detected
+            state: { position: open, obstacle: true }

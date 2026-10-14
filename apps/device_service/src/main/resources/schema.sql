@@ -1,0 +1,12 @@
+CREATE TABLE IF NOT EXISTS devices (
+    id UUID PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    type VARCHAR(50) NOT NULL,
+    location VARCHAR(100),
+    status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+    legacy_sensor_id INT UNIQUE,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_devices_type ON devices(type);

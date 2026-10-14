@@ -1,0 +1,43 @@
+@startuml C4_Component_Telemetry_Service
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Диаграмма компонентов — Telemetry Service (Go)
+
+Container(api_gateway, "API Gateway", "Kong", "Запросы пользователей")
+Container(device_service, "Device Management Service", "Kotlin", "Метаданные устройств")
+ContainerQueue(broker, "Message Broker", "RabbitMQ", "telemetry.raw, telemetry.normalized")
+ContainerDb(telemetry_db, "Telemetry DB", "TimescaleDB", "Временные ряды")
+ContainerDb(redis, "Cache", "Redis", "Метаданные устройств")
+
+Container_Boundary(telemetry_service, "Telemetry Service") {
+    Component(ingest_consumer, "Ingest Consumer", "Go, amqp091-go", "Читает очередь telemetry.raw с prefetch; масштабируется числом экземпляров (competing consumers)")
+    Component(validator, "Telemetry Validator", "Go", "Проверяет схему и диапазоны по типу устройства, отбрасывает дубликаты")
+    Component(normalizer, "Normalizer", "Go", "Приводит к единым единицам (°C, %, лк), добавляет дом и помещение")
+    Component(device_cache, "Device Metadata Cache", "Go + Redis", "device_id → дом, помещение, тип, единицы")
+    Component(writer, "Time-Series Writer", "Go", "Пакетная запись в TimescaleDB, ack сообщений после записи")
+    Component(event_publisher, "Normalized Event Publisher", "Go, amqp091-go", "Публикует telemetry.normalized с ключом {metric}.{deviceType}")
+    Component(query_api, "Telemetry Query API", "Go, net/http", "Последнее значение, история за период, агрегаты min/avg/max")
+}
+
+Rel(broker, ingest_consumer, "telemetry.raw", "AMQP")
+Rel(ingest_consumer, validator, "Сообщения")
+Rel(validator, device_cache, "Метаданные")
+Rel(validator, normalizer, "Валидные данные")
+Rel(normalizer, writer, "Данные")
+Rel(normalizer, event_publisher, "Данные")
+Rel(device_cache, redis, "Читает/пишет")
+Rel(device_cache, device_service, "При промахе кэша", "REST")
+Rel(writer, telemetry_db, "Пишет", "SQL")
+Rel(query_api, telemetry_db, "Читает", "SQL")
+Rel(event_publisher, broker, "telemetry.normalized", "AMQP")
+Rel(api_gateway, query_api, "Вызывает", "REST / JSON")
+
+note right of telemetry_db
+  Хранение и прореживание старых данных —
+  встроенные политики TimescaleDB
+  (retention policy, continuous aggregates).
+end note
+
+@enduml

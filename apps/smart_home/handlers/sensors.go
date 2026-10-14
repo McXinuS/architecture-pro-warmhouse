@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"smarthome/db"
+	"smarthome/events"
 	"smarthome/models"
 	"smarthome/services"
 
@@ -18,13 +19,15 @@ import (
 type SensorHandler struct {
 	DB                 *db.DB
 	TemperatureService *services.TemperatureService
+	Events             *events.Publisher
 }
 
 // NewSensorHandler creates a new SensorHandler
-func NewSensorHandler(db *db.DB, temperatureService *services.TemperatureService) *SensorHandler {
+func NewSensorHandler(db *db.DB, temperatureService *services.TemperatureService, publisher *events.Publisher) *SensorHandler {
 	return &SensorHandler{
 		DB:                 db,
 		TemperatureService: temperatureService,
+		Events:             publisher,
 	}
 }
 
@@ -42,6 +45,29 @@ func (h *SensorHandler) RegisterRoutes(router *gin.RouterGroup) {
 	}
 }
 
+// refreshTemperature fetches a fresh reading for a temperature sensor and forwards it
+// to Telemetry Service.
+func (h *SensorHandler) refreshTemperature(sensor *models.Sensor) {
+	if sensor.Type != models.Temperature {
+		return
+	}
+	tempData, err := h.TemperatureService.GetTemperatureByID(fmt.Sprintf("%d", sensor.ID))
+	if err != nil {
+		log.Printf("Failed to fetch temperature data for sensor %d: %v", sensor.ID, err)
+		return
+	}
+	sensor.Value = tempData.Value
+	sensor.Status = tempData.Status
+	sensor.LastUpdated = tempData.Timestamp
+	log.Printf("Updated temperature data for sensor %d from external API", sensor.ID)
+
+	unit := tempData.Unit
+	if unit == "" {
+		unit = sensor.Unit
+	}
+	h.Events.PublishTelemetry(*sensor, tempData.Value, unit, tempData.Timestamp)
+}
+
 // GetSensors handles GET /api/v1/sensors
 func (h *SensorHandler) GetSensors(c *gin.Context) {
 	sensors, err := h.DB.GetSensors(context.Background())
@@ -50,20 +76,8 @@ func (h *SensorHandler) GetSensors(c *gin.Context) {
 		return
 	}
 
-	// Update temperature sensors with real-time data from the external API
-	for i, sensor := range sensors {
-		if sensor.Type == models.Temperature {
-			tempData, err := h.TemperatureService.GetTemperatureByID(fmt.Sprintf("%d", sensor.ID))
-			if err == nil {
-				// Update sensor with real-time data
-				sensors[i].Value = tempData.Value
-				sensors[i].Status = tempData.Status
-				sensors[i].LastUpdated = tempData.Timestamp
-				log.Printf("Updated temperature data for sensor %d from external API", sensor.ID)
-			} else {
-				log.Printf("Failed to fetch temperature data for sensor %d: %v", sensor.ID, err)
-			}
-		}
+	for i := range sensors {
+		h.refreshTemperature(&sensors[i])
 	}
 
 	c.JSON(http.StatusOK, sensors)
@@ -83,19 +97,7 @@ func (h *SensorHandler) GetSensorByID(c *gin.Context) {
 		return
 	}
 
-	// If this is a temperature sensor, fetch real-time data from the temperature API
-	if sensor.Type == models.Temperature {
-		tempData, err := h.TemperatureService.GetTemperatureByID(fmt.Sprintf("%d", sensor.ID))
-		if err == nil {
-			// Update sensor with real-time data
-			sensor.Value = tempData.Value
-			sensor.Status = tempData.Status
-			sensor.LastUpdated = tempData.Timestamp
-			log.Printf("Updated temperature data for sensor %d from external API", sensor.ID)
-		} else {
-			log.Printf("Failed to fetch temperature data for sensor %d: %v", sensor.ID, err)
-		}
-	}
+	h.refreshTemperature(&sensor)
 
 	c.JSON(http.StatusOK, sensor)
 }
@@ -142,6 +144,7 @@ func (h *SensorHandler) CreateSensor(c *gin.Context) {
 		return
 	}
 
+	h.Events.PublishSensorEvent("created", sensor)
 	c.JSON(http.StatusCreated, sensor)
 }
 
@@ -165,6 +168,10 @@ func (h *SensorHandler) UpdateSensor(c *gin.Context) {
 		return
 	}
 
+	h.Events.PublishSensorEvent("updated", sensor)
+	if sensorUpdate.Value != nil {
+		h.Events.PublishTelemetry(sensor, *sensorUpdate.Value, sensor.Unit, sensor.LastUpdated)
+	}
 	c.JSON(http.StatusOK, sensor)
 }
 
@@ -176,12 +183,17 @@ func (h *SensorHandler) DeleteSensor(c *gin.Context) {
 		return
 	}
 
+	sensor, lookupErr := h.DB.GetSensorByID(context.Background(), id)
+
 	err = h.DB.DeleteSensor(context.Background(), id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
+	if lookupErr == nil {
+		h.Events.PublishSensorEvent("deleted", sensor)
+	}
 	c.JSON(http.StatusOK, gin.H{"message": "Sensor deleted successfully"})
 }
 
@@ -209,5 +221,8 @@ func (h *SensorHandler) UpdateSensorValue(c *gin.Context) {
 		return
 	}
 
+	if sensor, err := h.DB.GetSensorByID(context.Background(), id); err == nil {
+		h.Events.PublishTelemetry(sensor, request.Value, sensor.Unit, sensor.LastUpdated)
+	}
 	c.JSON(http.StatusOK, gin.H{"message": "Sensor value updated successfully"})
 }

@@ -1,0 +1,264 @@
+openapi: 3.1.0
+info:
+  title: Property Service API
+  version: 1.0.0
+  description: |
+    Посёлки, дома, помещения и участники дома. Кроме пользовательского API сервис
+    предоставляет внутренний эндпоинт проверки доступа, которым пользуются другие микросервисы.
+
+    Реализация: Go.
+servers:
+  - url: https://api.warmhouse.example/api/v1
+    description: Через API Gateway
+  - url: http://property:8080/api/v1
+    description: Внутри кластера (другие микросервисы)
+security:
+  - bearerAuth: []
+tags:
+  - name: members
+    description: Участники дома
+  - name: internal
+    description: Только для микросервисов, через API Gateway не публикуется
+
+paths:
+  /houses/{houseId}/members:
+    parameters:
+      - name: houseId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [members]
+      operationId: inviteMember
+      summary: Пригласить участника в дом
+      description: |
+        Приглашать может только владелец дома. Пользователь получает приглашение по email
+        и становится участником после того, как примет его. Если пользователь ещё не
+        зарегистрирован, приглашение сработает после регистрации с тем же email.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InvitationRequest'
+            examples:
+              family:
+                summary: Пригласить члена семьи
+                value:
+                  email: maria@example.com
+                  role: FAMILY
+              installer:
+                summary: Временный доступ монтажнику на день
+                value:
+                  email: installer@partner.example
+                  role: INSTALLER
+                  validUntil: '2026-10-15T20:00:00Z'
+      responses:
+        '201':
+          description: Приглашение создано
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Invitation'
+              examples:
+                pending:
+                  value:
+                    id: 3b4c5d6e-7f8a-4b9c-8d0e-1f2a3b4c5d6e
+                    houseId: 6f1c2a9e-1b8e-4a57-9b0e-3a6d2b7c1f10
+                    email: maria@example.com
+                    role: FAMILY
+                    status: PENDING
+                    validUntil: null
+                    expiresAt: '2026-10-21T12:00:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Приглашать участников может только владелец дома
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              examples:
+                notOwner:
+                  value:
+                    type: https://api.warmhouse.example/problems/forbidden
+                    title: Доступ запрещён
+                    status: 403
+                    detail: Приглашать участников может только владелец дома
+        '404':
+          description: Дом не найден
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: Пользователь уже участник дома или приглашение уже отправлено
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              examples:
+                alreadyMember:
+                  value:
+                    type: https://api.warmhouse.example/problems/already-member
+                    title: Уже участник
+                    status: 409
+                    detail: maria@example.com уже участник дома
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /internal/access-check:
+    get:
+      tags: [internal]
+      operationId: checkAccess
+      summary: Проверить доступ пользователя к дому
+      description: |
+        Вызывается Device Management, Heating, Lighting, Gates, Surveillance и Scenario
+        перед изменяющими операциями. Требует сервисный токен (роль `SERVICE`).
+        Ответ `200` возвращается и при отказе в доступе — с `allowed: false`.
+      parameters:
+        - name: userId
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: houseId
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: action
+          in: query
+          required: true
+          description: Что пользователь хочет сделать
+          schema:
+            type: string
+            enum: [VIEW, CONTROL, MANAGE]
+      responses:
+        '200':
+          description: Результат проверки
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccessCheckResult'
+              examples:
+                allowed:
+                  summary: Член семьи управляет устройствами
+                  value:
+                    allowed: true
+                    role: FAMILY
+                denied:
+                  summary: Гость пытается изменить настройки дома
+                  value:
+                    allowed: false
+                    role: GUEST
+                    reason: Роль GUEST не позволяет действие MANAGE
+                notMember:
+                  summary: Пользователь не участник дома
+                  value:
+                    allowed: false
+                    role: null
+                    reason: Пользователь не участник дома
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Вызывающий — не микросервис (нет роли SERVICE)
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Дом не найден
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Пользовательский JWT или сервисный токен (OAuth2 client credentials) от IAM Service.
+
+  schemas:
+    Role:
+      type: string
+      enum: [OWNER, FAMILY, GUEST, INSTALLER]
+
+    InvitationRequest:
+      type: object
+      required: [email, role]
+      properties:
+        email: { type: string, format: email }
+        role:
+          type: string
+          enum: [FAMILY, GUEST, INSTALLER]
+          description: Роль OWNER не выдаётся приглашением
+        validUntil:
+          type: [string, 'null']
+          format: date-time
+          description: Срок участия; для GUEST и INSTALLER обязателен
+
+    Invitation:
+      type: object
+      required: [id, houseId, email, role, status, expiresAt]
+      properties:
+        id: { type: string, format: uuid }
+        houseId: { type: string, format: uuid }
+        email: { type: string, format: email }
+        role:
+          $ref: '#/components/schemas/Role'
+        status: { type: string, enum: [PENDING, ACCEPTED, EXPIRED, REVOKED] }
+        validUntil: { type: [string, 'null'], format: date-time }
+        expiresAt:
+          type: string
+          format: date-time
+          description: До какого момента можно принять приглашение
+
+    AccessCheckResult:
+      type: object
+      required: [allowed, role]
+      properties:
+        allowed: { type: boolean }
+        role:
+          oneOf:
+            - $ref: '#/components/schemas/Role'
+            - type: 'null'
+        reason: { type: string }
+
+    Problem:
+      type: object
+      description: Ошибка в формате RFC 7807
+      required: [type, title, status]
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+
+  responses:
+    BadRequest:
+      description: Некорректный запрос
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Unauthorized:
+      description: Нет токена или он недействителен
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    InternalError:
+      description: Внутренняя ошибка сервера
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
