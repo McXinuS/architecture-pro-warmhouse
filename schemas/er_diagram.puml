@@ -1,0 +1,420 @@
+@startuml ER_Warmhouse_To_Be
+title ER-диаграмма — целевая экосистема «Тёплый дом» (To-Be)
+
+hide circle
+skinparam linetype ortho
+skinparam packageStyle rectangle
+
+' Сплошная линия — внешний ключ внутри БД одного сервиса.
+' Пунктир — логическая ссылка на сущность другого сервиса (по UUID, без FK в БД).
+' Курсив в атрибутах — пояснение или ссылка на сущность другого сервиса.
+
+package "IAM Service (IAM DB)" #F5F5F5 {
+    entity "User" as user {
+        * id : UUID <<PK>>
+        --
+        * email : VARCHAR(255) <<UNIQUE>>
+        phone : VARCHAR(32)
+        * password_hash : VARCHAR(255)
+        * full_name : VARCHAR(255)
+        * global_role : VARCHAR(32)  //USER / SUPPORT / ADMIN//
+        * is_active : BOOLEAN
+        * created_at : TIMESTAMPTZ
+    }
+
+    entity "RefreshToken" as refresh_token {
+        * id : UUID <<PK>>
+        --
+        * user_id : UUID <<FK>>
+        * token_hash : VARCHAR(255)
+        * expires_at : TIMESTAMPTZ
+        revoked_at : TIMESTAMPTZ
+    }
+
+    entity "NotificationPreference" as notif_pref {
+        * id : UUID <<PK>>
+        --
+        * user_id : UUID <<FK>>
+        * channel : VARCHAR(16)  //PUSH / SMS / EMAIL / TELEGRAM//
+        * is_enabled : BOOLEAN
+        quiet_hours_from : TIME
+        quiet_hours_to : TIME
+        min_severity : VARCHAR(16)
+    }
+}
+
+package "Property Service (Property DB)" #F5F5F5 {
+    entity "Village" as village {
+        * id : UUID <<PK>>
+        --
+        * name : VARCHAR(255)
+        * region : VARCHAR(128)
+        * timezone : VARCHAR(64)
+    }
+
+    entity "House" as house {
+        * id : UUID <<PK>>
+        --
+        village_id : UUID <<FK>>
+        * name : VARCHAR(255)
+        * address : VARCHAR(512)
+        * owner_id : UUID  //ссылка на User (IAM)//
+        * created_at : TIMESTAMPTZ
+    }
+
+    entity "Room" as room {
+        * id : UUID <<PK>>
+        --
+        * house_id : UUID <<FK>>
+        * name : VARCHAR(100)  //Гостиная, Спальня, Кухня//
+        floor : SMALLINT
+    }
+
+    entity "HouseMember" as house_member {
+        * house_id : UUID <<PK, FK>>
+        * user_id : UUID <<PK>>  //ссылка на User (IAM)//
+        --
+        * role : VARCHAR(32)  //OWNER / FAMILY / GUEST / INSTALLER//
+        valid_until : TIMESTAMPTZ
+    }
+
+    entity "HouseInvitation" as house_invitation {
+        * id : UUID <<PK>>
+        --
+        * house_id : UUID <<FK>>
+        * email : VARCHAR(255)
+        * role : VARCHAR(32)  //FAMILY / GUEST / INSTALLER//
+        * status : VARCHAR(16)  //PENDING / ACCEPTED / EXPIRED / REVOKED//
+        valid_until : TIMESTAMPTZ
+        * expires_at : TIMESTAMPTZ
+        * invited_by : UUID  //ссылка на User (IAM)//
+    }
+}
+
+package "Catalog & Orders Service (Catalog DB)" #F5F5F5 {
+    entity "Kit" as kit {
+        * id : UUID <<PK>>
+        --
+        * code : VARCHAR(64) <<UNIQUE>>
+        * name : VARCHAR(255)  //Комплект «Отопление», «Свет», «Ворота»//
+        description : TEXT
+        * price : NUMERIC(12,2)
+        * is_available : BOOLEAN
+    }
+
+    entity "KitItem" as kit_item {
+        * kit_id : UUID <<PK, FK>>
+        * device_type_id : UUID <<PK>>  //ссылка на DeviceType (Device)//
+        --
+        * quantity : INT
+    }
+
+    entity "Order" as order {
+        * id : UUID <<PK>>
+        --
+        * user_id : UUID  //ссылка на User (IAM)//
+        * status : VARCHAR(16)  //CREATED / PAID / SHIPPED / DELIVERED / CANCELLED//
+        * total_amount : NUMERIC(12,2)
+        * created_at : TIMESTAMPTZ
+    }
+
+    entity "OrderItem" as order_item {
+        * id : UUID <<PK>>
+        --
+        * order_id : UUID <<FK>>
+        * kit_id : UUID <<FK>>
+        * quantity : INT
+        * unit_price : NUMERIC(12,2)
+    }
+
+    entity "SerialNumber" as serial_number {
+        * serial_number : VARCHAR(64) <<PK>>
+        --
+        * device_type_id : UUID  //ссылка на DeviceType (Device)//
+        order_item_id : UUID <<FK>>
+        * status : VARCHAR(16)  //IN_STOCK / SOLD / ACTIVATED//
+        activated_at : TIMESTAMPTZ
+    }
+}
+
+package "Device Management Service (Device DB)" #F5F5F5 {
+    entity "DeviceType" as device_type {
+        * id : UUID <<PK>>
+        --
+        * code : VARCHAR(64) <<UNIQUE>>  //heating_relay, temp_sensor, light, gate, camera//
+        * category : VARCHAR(32)  //SENSOR / ACTUATOR / CAMERA//
+        * domain : VARCHAR(16)  //heating / light / gate / camera / sensor//
+        * manufacturer : VARCHAR(128)
+        * protocol : VARCHAR(32)  //MQTT / HTTP / ZIGBEE//
+        telemetry_schema : JSONB
+    }
+
+    entity "DeviceCapability" as device_capability {
+        * id : UUID <<PK>>
+        --
+        * device_type_id : UUID <<FK>>
+        * name : VARCHAR(64)  //turn_on, set_target_temp, open//
+        params_schema : JSONB
+    }
+
+    entity "Module" as module {
+        * id : UUID <<PK>>
+        --
+        * house_id : UUID  //ссылка на House (Property)//
+        * serial_number : VARCHAR(64) <<UNIQUE>>
+        * kind : VARCHAR(32)  //CONTROL_UNIT / GATEWAY / HUB//
+        * firmware_version : VARCHAR(32)
+        last_seen_at : TIMESTAMPTZ
+    }
+
+    entity "Device" as device {
+        * id : UUID <<PK>>
+        --
+        * type_id : UUID <<FK>>
+        module_id : UUID <<FK>>
+        * house_id : UUID  //ссылка на House (Property)//
+        room_id : UUID  //ссылка на Room (Property)//
+        * serial_number : VARCHAR(64) <<UNIQUE>>
+        * name : VARCHAR(100)
+        * status : VARCHAR(16)  //PENDING / ACTIVE / DISABLED//
+        * mqtt_client_id : VARCHAR(128)
+        * created_at : TIMESTAMPTZ
+    }
+
+    entity "DeviceState" as device_state {
+        * device_id : UUID <<PK, FK>>
+        --
+        * reported : JSONB  //например power=on, target_temp=21//
+        * is_online : BOOLEAN
+        * updated_at : TIMESTAMPTZ
+    }
+
+    entity "DeviceCommand" as device_command {
+        * id : UUID <<PK>>
+        --
+        * device_id : UUID <<FK>>
+        * name : VARCHAR(64)
+        params : JSONB
+        * status : VARCHAR(16)  //PENDING / SENT / ACKED / FAILED / TIMED_OUT//
+        * source : VARCHAR(16)  //USER / SCENARIO / HEATING / LIGHTING / GATES / SURVEILLANCE//
+        issued_by : UUID  //ссылка на User (IAM)//
+        idempotency_key : VARCHAR(64) <<UNIQUE>>
+        * created_at : TIMESTAMPTZ
+        completed_at : TIMESTAMPTZ
+    }
+}
+
+package "Telemetry Service (Telemetry DB, TimescaleDB)" #F5F5F5 {
+    entity "TelemetryData" as telemetry {
+        * device_id : UUID <<PK>>  //ссылка на Device (Device)//
+        * ts : TIMESTAMPTZ <<PK>>
+        * metric : VARCHAR(32) <<PK>>  //temperature, humidity, power//
+        --
+        * value : DOUBLE PRECISION
+        * unit : VARCHAR(16)
+        house_id : UUID  //ссылка на House (Property)//
+        room_id : UUID  //ссылка на Room (Property)//
+    }
+}
+
+package "Heating Service (Heating DB)" #F5F5F5 {
+    entity "HeatingProfile" as heating_profile {
+        * id : UUID <<PK>>
+        --
+        * house_id : UUID  //ссылка на House (Property)//
+        room_id : UUID  //ссылка на Room (Property)//
+        * mode : VARCHAR(16)  //COMFORT / ECO / AWAY//
+        * target_temp : NUMERIC(4,1)
+        * hysteresis : NUMERIC(3,1)
+        * is_active : BOOLEAN
+    }
+
+    entity "HeatingSchedule" as heating_schedule {
+        * id : UUID <<PK>>
+        --
+        * profile_id : UUID <<FK>>
+        * day_of_week : SMALLINT
+        * start_time : TIME
+        * end_time : TIME
+        target_temp : NUMERIC(4,1)
+    }
+}
+
+package "Scenario Service (Scenario DB)" #F5F5F5 {
+    entity "Scenario" as scenario {
+        * id : UUID <<PK>>
+        --
+        * house_id : UUID  //ссылка на House (Property)//
+        * name : VARCHAR(255)
+        * is_enabled : BOOLEAN
+        * condition_logic : VARCHAR(8)  //ALL / ANY//
+        * created_by : UUID  //ссылка на User (IAM)//
+        * created_at : TIMESTAMPTZ
+    }
+
+    entity "ScenarioTrigger" as scenario_trigger {
+        * id : UUID <<PK>>
+        --
+        * scenario_id : UUID <<FK>>
+        * type : VARCHAR(16)  //THRESHOLD / EVENT / SCHEDULE//
+        device_id : UUID  //ссылка на Device (Device)//
+        metric : VARCHAR(32)
+        operator : VARCHAR(8)  //LT / GT / EQ//
+        threshold : DOUBLE PRECISION
+        cron : VARCHAR(64)
+    }
+
+    entity "ScenarioAction" as scenario_action {
+        * id : UUID <<PK>>
+        --
+        * scenario_id : UUID <<FK>>
+        * type : VARCHAR(16)  //COMMAND / NOTIFY//
+        device_id : UUID  //ссылка на Device (Device)//
+        command_name : VARCHAR(64)
+        params : JSONB
+        position : INT
+    }
+
+    entity "ScenarioExecution" as scenario_execution {
+        * id : UUID <<PK>>
+        --
+        * scenario_id : UUID <<FK>>
+        * triggered_at : TIMESTAMPTZ
+        * result : VARCHAR(16)  //SUCCESS / FAILED / SKIPPED//
+        details : JSONB
+    }
+}
+
+package "Lighting Service (Lighting DB)" #F5F5F5 {
+    entity "LightGroup" as light_group {
+        * id : UUID <<PK>>
+        --
+        * house_id : UUID  //ссылка на House (Property)//
+        * name : VARCHAR(100)  //Первый этаж, Подсветка въезда//
+    }
+
+    entity "LightGroupMember" as light_group_member {
+        * group_id : UUID <<PK, FK>>
+        * device_id : UUID <<PK>>  //ссылка на Device (Device)//
+    }
+
+    entity "LightSchedule" as light_schedule {
+        * id : UUID <<PK>>
+        --
+        * group_id : UUID <<FK>>
+        * action : VARCHAR(16)  //ON / OFF//
+        brightness : SMALLINT  //0–100//
+        * cron : VARCHAR(64)
+        * is_enabled : BOOLEAN
+    }
+}
+
+package "Gates Service (Gates DB)" #F5F5F5 {
+    entity "GatePermission" as gate_permission {
+        * id : UUID <<PK>>
+        --
+        * device_id : UUID  //ссылка на Device (Device): ворота или шлагбаум//
+        * user_id : UUID  //ссылка на User (IAM)//
+        * kind : VARCHAR(16)  //PERMANENT / GUEST//
+        valid_from : TIMESTAMPTZ
+        valid_until : TIMESTAMPTZ
+    }
+
+    entity "GateEvent" as gate_event {
+        * id : UUID <<PK>>
+        --
+        * device_id : UUID  //ссылка на Device (Device)//
+        user_id : UUID  //ссылка на User (IAM)//
+        * event_type : VARCHAR(32)  //OPENED / CLOSED / OBSTACLE//
+        * occurred_at : TIMESTAMPTZ
+    }
+}
+
+package "Surveillance Service (Surveillance DB)" #F5F5F5 {
+    entity "CameraPermission" as camera_permission {
+        * device_id : UUID <<PK>>  //ссылка на Device (Device): камера//
+        * user_id : UUID <<PK>>  //ссылка на User (IAM)//
+        --
+        * can_view_live : BOOLEAN
+    }
+
+    entity "MotionEvent" as motion_event {
+        * id : UUID <<PK>>
+        --
+        * device_id : UUID  //ссылка на Device (Device)//
+        * event_type : VARCHAR(32)  //MOTION / CAMERA_OFFLINE//
+        * occurred_at : TIMESTAMPTZ
+        snapshot_url : VARCHAR(512)
+    }
+}
+
+' ---- Связи внутри сервисов ----
+user ||--o{ refresh_token : "имеет"
+user ||--o{ notif_pref : "настраивает"
+
+village |o--o{ house : "включает"
+house ||--o{ room : "содержит"
+house ||--o{ house_member : "имеет участников"
+house ||--o{ house_invitation : "приглашения"
+
+kit ||--|{ kit_item : "состоит из"
+order ||--|{ order_item : "содержит"
+kit ||--o{ order_item : "заказан в"
+order_item |o--o{ serial_number : "включает номера"
+
+device_type ||--o{ device_capability : "поддерживает"
+device_type ||--o{ device : "определяет"
+module |o--o{ device : "управляет"
+device ||--|| device_state : "имеет состояние"
+device ||--o{ device_command : "получает"
+
+heating_profile ||--o{ heating_schedule : "расписание"
+
+light_group ||--o{ light_group_member : "включает"
+light_group ||--o{ light_schedule : "расписание"
+
+scenario ||--|{ scenario_trigger : "запускается"
+scenario ||--|{ scenario_action : "выполняет"
+scenario ||--o{ scenario_execution : "журнал"
+
+' ---- Логические связи между сервисами ----
+user ||..o{ house : "владеет"
+user ||..o{ house_member : "участвует"
+user ||..o{ order : "оформляет"
+user ||..o{ scenario : "создаёт"
+user |o..o{ device_command : "выдаёт"
+user ||..o{ gate_permission : "получает"
+user ||..o{ camera_permission : "получает"
+
+house ||..o{ module : "установлен в"
+house ||..o{ device : "находится в"
+room |o..o{ device : "размещено в"
+house ||..o{ heating_profile : "отопление дома"
+house ||..o{ scenario : "сценарии дома"
+house ||..o{ light_group : "группы света"
+
+device ||..o{ telemetry : "генерирует"
+device ||..o{ scenario_trigger : "источник"
+device ||..o{ scenario_action : "цель"
+device ||..o{ light_group_member : "входит в группу"
+device ||..o{ gate_permission : "доступ к воротам"
+device ||..o{ gate_event : "события ворот"
+device ||..o{ camera_permission : "доступ к камере"
+device ||..o{ motion_event : "события камеры"
+
+device_type ||..o{ kit_item : "входит в комплект"
+device_type ||..o{ serial_number : "тип модуля"
+serial_number |o..o| device : "активируется как"
+
+note bottom of telemetry
+  Hypertable TimescaleDB, партиционирование по ts.
+  Сырые данные хранятся ограниченное время,
+  старые данные агрегируются до часовых значений.
+end note
+
+note bottom of device_type
+  Новые датчики подключаются добавлением
+  DeviceType и DeviceCapability без изменения кода.
+end note
+
+@enduml

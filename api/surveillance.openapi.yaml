@@ -1,0 +1,147 @@
+openapi: 3.1.0
+info:
+  title: Surveillance Service API
+  version: 1.0.0
+  description: |
+    Видеонаблюдение: выдача короткоживущих ссылок на видеопоток камеры.
+    Media Proxy сервиса преобразует RTSP-поток камеры в WebRTC или HLS.
+
+    Реализация: Go.
+servers:
+  - url: https://api.warmhouse.example/api/v1
+    description: Через API Gateway
+security:
+  - bearerAuth: []
+tags:
+  - name: cameras
+
+paths:
+  /houses/{houseId}/cameras/{cameraId}/stream-sessions:
+    parameters:
+      - name: houseId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: cameraId
+        in: path
+        required: true
+        description: Идентификатор устройства-камеры в Device Management Service
+        schema: { type: string, format: uuid }
+    post:
+      tags: [cameras]
+      operationId: createStreamSession
+      summary: Получить ссылку на видеопоток камеры
+      description: |
+        Проверяет право пользователя на просмотр (`CameraPermission`) и создаёт сессию просмотра.
+        Ссылка подписана и действует 5 минут; продлить просмотр — создать новую сессию.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StreamSessionRequest'
+            examples:
+              browser:
+                summary: Просмотр в браузере
+                value: { protocol: WEBRTC }
+              mobile:
+                summary: Просмотр в мобильном приложении через HLS
+                value: { protocol: HLS }
+      responses:
+        '201':
+          description: Сессия создана
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StreamSession'
+              examples:
+                webrtc:
+                  value:
+                    sessionId: 5e4d3c2b-1a09-4f8e-9d7c-6b5a4f3e2d1c
+                    cameraId: 1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f
+                    protocol: WEBRTC
+                    url: wss://media.warmhouse.example/webrtc/5e4d3c2b?sig=a1b2c3
+                    expiresAt: '2026-10-14T18:05:00Z'
+        '400':
+          description: Некорректный запрос
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: Нет токена или он недействителен
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: Нет права на просмотр этой камеры
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              examples:
+                noPermission:
+                  value:
+                    type: https://api.warmhouse.example/problems/forbidden
+                    title: Доступ запрещён
+                    status: 403
+                    detail: Просмотр камеры «Въезд» не разрешён этому пользователю
+        '404':
+          description: Дом или камера не найдены
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: Камера офлайн
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              examples:
+                offline:
+                  value:
+                    type: https://api.warmhouse.example/problems/device-offline
+                    title: Камера недоступна
+                    status: 409
+        '500':
+          description: Внутренняя ошибка сервера
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    StreamSessionRequest:
+      type: object
+      required: [protocol]
+      properties:
+        protocol: { type: string, enum: [WEBRTC, HLS] }
+
+    StreamSession:
+      type: object
+      required: [sessionId, cameraId, protocol, url, expiresAt]
+      properties:
+        sessionId: { type: string, format: uuid }
+        cameraId: { type: string, format: uuid }
+        protocol: { type: string, enum: [WEBRTC, HLS] }
+        url: { type: string, format: uri }
+        expiresAt: { type: string, format: date-time }
+
+    Problem:
+      type: object
+      description: Ошибка в формате RFC 7807
+      required: [type, title, status]
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }

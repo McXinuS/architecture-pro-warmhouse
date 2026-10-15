@@ -1,0 +1,44 @@
+@startuml C4_Component_Surveillance_Service
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Диаграмма компонентов — Surveillance Service (Go)
+
+Container(api_gateway, "API Gateway", "Kong", "Запросы пользователей")
+Container(device_service, "Device Management Service", "Kotlin", "Список камер, команды камерам")
+ContainerQueue(broker, "Message Broker", "RabbitMQ", "device.events, notifications")
+ContainerDb(surveillance_db, "Surveillance DB", "PostgreSQL", "Доступы к камерам, события движения")
+System_Ext(cameras, "IP-камеры", "RTSP / ONVIF")
+
+Container_Boundary(surveillance_service, "Surveillance Service") {
+    Component(rest_api, "Surveillance REST API", "Go, net/http", "Список камер, ссылка на видеопоток, журнал событий движения")
+    Component(permission_manager, "Camera Permission Manager", "Go", "Кто из участников дома может смотреть какие камеры")
+    Component(stream_manager, "Stream Manager", "Go", "Выдаёт короткоживущие подписанные ссылки на поток")
+    Component(media_proxy, "Media Proxy", "Go", "Преобразует RTSP камеры в WebRTC/HLS для браузера и приложения")
+    Component(motion_consumer, "Motion Event Consumer", "Go, amqp091-go", "Очередь device.events с ключом camera.*: движение, камера офлайн")
+    Component(event_journal, "Event Journal", "Go", "Журнал событий движения")
+    Component(device_client, "Device Client", "Go", "Список камер дома и команды камерам через Device Management Service")
+    Component(alert_publisher, "Alert Publisher", "Go, amqp091-go", "Уведомления о движении и пропаже камеры")
+}
+
+Rel(api_gateway, rest_api, "Вызывает", "REST / JSON")
+Rel(rest_api, permission_manager, "Проверка прав")
+Rel(rest_api, stream_manager, "Ссылка на поток")
+Rel(rest_api, event_journal, "Журнал")
+Rel(rest_api, device_client, "Камеры дома")
+Rel(stream_manager, media_proxy, "Сессия просмотра")
+Rel(media_proxy, cameras, "Видеопоток", "RTSP")
+Rel(device_client, device_service, "GET /devices, POST /devices/{id}/commands", "REST")
+Rel(motion_consumer, event_journal, "Записывает событие")
+Rel(motion_consumer, alert_publisher, "Движение / офлайн")
+Rel(permission_manager, surveillance_db, "SQL")
+Rel(event_journal, surveillance_db, "SQL")
+Rel(broker, motion_consumer, "device.events", "AMQP")
+Rel(alert_publisher, broker, "notifications", "AMQP")
+
+note bottom of media_proxy
+  Архив видеозаписей не входит в MVP.
+end note
+
+@enduml

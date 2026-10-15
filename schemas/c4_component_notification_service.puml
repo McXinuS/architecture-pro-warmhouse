@@ -1,0 +1,31 @@
+@startuml C4_Component_Notification_Service
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Диаграмма компонентов — Notification Service (Go)
+
+Container(iam_service, "IAM Service", "Kotlin", "Контакты и настройки уведомлений")
+ContainerQueue(broker, "Message Broker", "RabbitMQ", "notifications")
+ContainerDb(redis, "Cache", "Redis", "Ключи дедупликации")
+System_Ext(push_email, "Push / Email провайдеры", "FCM / APNs, SMTP")
+
+Container_Boundary(notification_service, "Notification Service") {
+    Component(consumer, "Notification Consumer", "Go, amqp091-go", "Читает очередь notifications; при ошибке сообщение возвращается в очередь")
+    Component(recipient_resolver, "Recipient Resolver", "Go", "Получатели по дому и ролям, их контакты и настройки")
+    Component(deduplicator, "Deduplicator", "Go + Redis", "Не отправляет одно и то же уведомление повторно в течение окна")
+    Component(push_sender, "Push Sender", "Go", "FCM / APNs")
+    Component(email_sender, "Email Sender", "Go", "SMTP")
+}
+
+Rel(broker, consumer, "notifications", "AMQP")
+Rel(consumer, recipient_resolver, "Событие")
+Rel(recipient_resolver, iam_service, "Контакты и настройки", "REST")
+Rel(recipient_resolver, deduplicator, "Получатели")
+Rel(deduplicator, redis, "Проверка ключа")
+Rel(deduplicator, push_sender, "Push")
+Rel(deduplicator, email_sender, "Email")
+Rel(push_sender, push_email, "Отправка", "HTTPS")
+Rel(email_sender, push_email, "Отправка", "SMTP")
+
+@enduml

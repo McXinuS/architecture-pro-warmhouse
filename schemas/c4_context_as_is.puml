@@ -1,0 +1,24 @@
+@startuml C4_Context
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Context.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Диаграмма системного контекста (C4 System Context) — Текущая система «Тёплый дом» (As-Is)
+
+Person(user, "Пользователь (Клиент)", "Владелец дома, использующий веб-интерфейс для контроля температуры и переключения отопления")
+Person(installer, "Инженер монтажа / Специалист компании", "Сотрудник, выезжающий на объект для первичной установки и привязки датчиков")
+
+System(warmhouse_monolith, "Монолит «Тёплый дом» (Smart Home Core)", "Монолитное приложение на Go с СУБД PostgreSQL. Реализует CRUD датчиков, синхронный опрос температуры и прямое управление статусом нагрева")
+
+System_Ext(temp_sensor, "Датчик температуры (Модуль)", "Физический датчик в доме клиента с HTTP API (например, /temperature). Отвечает на запросы сервера о текущей температуре")
+System_Ext(heating_relay, "Реле / Модуль управления отоплением", "Физическое реле котла/отопителя. Принимает синхронные команды включения/выключения от монолита")
+
+Rel(user, warmhouse_monolith, "Просмотр температуры и управление отоплением", "HTTPS / JSON API / Web UI")
+Rel(installer, warmhouse_monolith, "Ручная регистрация и привязка датчиков к дому", "HTTPS / Admin UI")
+Rel(installer, temp_sensor, "Физический монтаж и локальная настройка сети", "Физическое подключение")
+Rel(installer, heating_relay, "Физический монтаж и подключение к котлу", "Физическое подключение")
+
+Rel(warmhouse_monolith, temp_sensor, "Синхронный pull-запрос температуры (GET /temperature)", "HTTP")
+Rel(warmhouse_monolith, heating_relay, "Синхронная отправка команды вкл/выкл", "HTTP / TCP")
+
+@enduml

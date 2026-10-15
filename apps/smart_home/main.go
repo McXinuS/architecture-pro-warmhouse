@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"smarthome/db"
+	"smarthome/events"
 	"smarthome/handlers"
 	"smarthome/services"
 
@@ -32,6 +33,10 @@ func main() {
 	temperatureService := services.NewTemperatureService(temperatureAPIURL)
 	log.Printf("Temperature service initialized with API URL: %s\n", temperatureAPIURL)
 
+	rabbitURL := getEnv("RABBITMQ_URL", "amqp://warmhouse:warmhouse@rabbitmq:5672/")
+	publisher := events.NewPublisher(rabbitURL)
+	defer publisher.Close()
+
 	// Initialize router
 	router := gin.Default()
 
@@ -46,7 +51,7 @@ func main() {
 	apiRoutes := router.Group("/api/v1")
 
 	// Register sensor routes
-	sensorHandler := handlers.NewSensorHandler(database, temperatureService)
+	sensorHandler := handlers.NewSensorHandler(database, temperatureService, publisher)
 	sensorHandler.RegisterRoutes(apiRoutes)
 
 	// Start server

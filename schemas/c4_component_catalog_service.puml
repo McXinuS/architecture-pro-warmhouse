@@ -1,0 +1,37 @@
+@startuml C4_Component_Catalog_Service
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Диаграмма компонентов — Catalog & Orders Service (Kotlin / Spring Boot)
+
+Container(api_gateway, "API Gateway", "Kong", "Маршрутизация, JWT")
+Container(device_service, "Device Management Service", "Kotlin", "Реестр устройств")
+ContainerDb(catalog_db, "Catalog DB", "PostgreSQL", "Комплекты, заказы, серийные номера")
+System_Ext(payment, "Платёжный провайдер", "Приём онлайн-платежей")
+
+Container_Boundary(catalog_service, "Catalog & Orders Service") {
+    Component(catalog_api, "Catalog REST API", "Spring MVC", "Список комплектов («Отопление», «Свет», «Ворота/Безопасность»), карточка товара")
+    Component(order_api, "Order REST API", "Spring MVC", "Создание заказа, статус, история заказов")
+    Component(kit_service, "Kit Service", "Spring Service", "Состав комплекта: модули, типы устройств, совместимость")
+    Component(order_service, "Order Service", "Spring Service", "Жизненный цикл заказа: создан → оплачен → отправлен → доставлен")
+    Component(payment_client, "Payment Client", "REST Client", "Оплата и подтверждение платежа")
+    Component(serial_service, "Serial Number Registry", "Spring Service", "Привязывает серийные номера проданных модулей к аккаунту; проверяет номер при onboarding")
+    Component(catalog_repository, "Catalog Repository", "Spring Data JPA", "Хранение комплектов, заказов, серийных номеров")
+}
+
+Rel(api_gateway, catalog_api, "Вызывает", "REST / JSON")
+Rel(api_gateway, order_api, "Вызывает", "REST / JSON")
+Rel(catalog_api, kit_service, "Читает каталог")
+Rel(order_api, order_service, "Заказ")
+Rel(order_service, kit_service, "Состав комплекта")
+Rel(order_service, payment_client, "Оплата")
+Rel(order_service, serial_service, "Резервирует серийные номера")
+Rel(payment_client, payment, "Платёж", "HTTPS")
+Rel(device_service, serial_service, "Проверка серийного номера", "REST")
+Rel(kit_service, catalog_repository, "CRUD")
+Rel(order_service, catalog_repository, "CRUD")
+Rel(serial_service, catalog_repository, "CRUD")
+Rel(catalog_repository, catalog_db, "Читает/пишет", "SQL")
+
+@enduml

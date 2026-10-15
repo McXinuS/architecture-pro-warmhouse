@@ -1,0 +1,246 @@
+openapi: 3.1.0
+info:
+  title: Gates Service API
+  version: 1.0.0
+  description: |
+    Управление воротами и шлагбаумами: открытие и закрытие, гостевые доступы.
+    Команды отправляются через Device Management Service, поэтому открытие — `202 Accepted`.
+
+    Реализация: Go.
+servers:
+  - url: https://api.warmhouse.example/api/v1
+    description: Через API Gateway
+security:
+  - bearerAuth: []
+tags:
+  - name: gates
+
+paths:
+  /houses/{houseId}/gates/{gateId}/actions:
+    parameters:
+      - $ref: '#/components/parameters/HouseId'
+      - $ref: '#/components/parameters/GateId'
+    post:
+      tags: [gates]
+      operationId: actOnGate
+      summary: Открыть или закрыть ворота
+      description: |
+        Доступно владельцу, членам семьи и гостям с действующим доступом (`GatePermission`).
+        Каждое действие записывается в журнал въездов.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GateActionRequest'
+            examples:
+              open:
+                value: { action: OPEN }
+              close:
+                value: { action: CLOSE }
+      responses:
+        '202':
+          description: Команда принята
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GateActionAccepted'
+              examples:
+                opening:
+                  value:
+                    gateId: 8c7b6a5d-4e3f-4a2b-9c1d-0e9f8a7b6c5d
+                    action: OPEN
+                    commandId: 6d5c4b3a-2f1e-4d0c-9b8a-7f6e5d4c3b2a
+                    requestedBy: 2a3b4c5d-6e7f-4a8b-9c0d-1e2f3a4b5c6d
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Нет доступа к воротам или гостевой доступ истёк
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              examples:
+                expired:
+                  value:
+                    type: https://api.warmhouse.example/problems/gate-access-expired
+                    title: Доступ истёк
+                    status: 403
+                    detail: Гостевой доступ действовал до 2026-10-14T20:00:00Z
+        '404':
+          $ref: '#/components/responses/GateNotFound'
+        '409':
+          description: Ворота офлайн или уже в запрошенном состоянии
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              examples:
+                alreadyOpen:
+                  value:
+                    type: https://api.warmhouse.example/problems/gate-state-conflict
+                    title: Ворота уже открыты
+                    status: 409
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /houses/{houseId}/gates/{gateId}/guest-passes:
+    parameters:
+      - $ref: '#/components/parameters/HouseId'
+      - $ref: '#/components/parameters/GateId'
+    post:
+      tags: [gates]
+      operationId: createGuestPass
+      summary: Выдать гостевой доступ к воротам
+      description: |
+        Временный доступ для участника дома с ролью `GUEST` (приглашение — в Property Service).
+        Выдать доступ может только владелец дома. Срок — не больше 30 дней.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GuestPassRequest'
+            examples:
+              weekend:
+                summary: Доступ на выходные
+                value:
+                  userId: 4f5e6d7c-8b9a-4c0d-9e1f-2a3b4c5d6e7f
+                  validFrom: '2026-10-17T09:00:00Z'
+                  validUntil: '2026-10-19T21:00:00Z'
+      responses:
+        '201':
+          description: Доступ выдан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GatePermission'
+              examples:
+                created:
+                  value:
+                    id: 0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d
+                    gateId: 8c7b6a5d-4e3f-4a2b-9c1d-0e9f8a7b6c5d
+                    userId: 4f5e6d7c-8b9a-4c0d-9e1f-2a3b4c5d6e7f
+                    kind: GUEST
+                    validFrom: '2026-10-17T09:00:00Z'
+                    validUntil: '2026-10-19T21:00:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Выдавать доступ может только владелец дома
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          $ref: '#/components/responses/GateNotFound'
+        '422':
+          description: Пользователь не участник дома, validUntil раньше validFrom или срок больше 30 дней
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              examples:
+                tooLong:
+                  value:
+                    type: https://api.warmhouse.example/problems/guest-pass-invalid
+                    title: Некорректный срок доступа
+                    status: 422
+                    detail: Гостевой доступ выдаётся не больше чем на 30 дней
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    HouseId:
+      name: houseId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    GateId:
+      name: gateId
+      in: path
+      required: true
+      description: Идентификатор устройства-ворот в Device Management Service
+      schema: { type: string, format: uuid }
+
+  schemas:
+    GateActionRequest:
+      type: object
+      required: [action]
+      properties:
+        action: { type: string, enum: [OPEN, CLOSE] }
+
+    GateActionAccepted:
+      type: object
+      required: [gateId, action, commandId, requestedBy]
+      properties:
+        gateId: { type: string, format: uuid }
+        action: { type: string, enum: [OPEN, CLOSE] }
+        commandId: { type: string, format: uuid }
+        requestedBy: { type: string, format: uuid }
+
+    GuestPassRequest:
+      type: object
+      required: [userId, validFrom, validUntil]
+      properties:
+        userId: { type: string, format: uuid }
+        validFrom: { type: string, format: date-time }
+        validUntil: { type: string, format: date-time }
+
+    GatePermission:
+      type: object
+      required: [id, gateId, userId, kind]
+      properties:
+        id: { type: string, format: uuid }
+        gateId: { type: string, format: uuid }
+        userId: { type: string, format: uuid }
+        kind: { type: string, enum: [PERMANENT, GUEST] }
+        validFrom: { type: [string, 'null'], format: date-time }
+        validUntil: { type: [string, 'null'], format: date-time }
+
+    Problem:
+      type: object
+      description: Ошибка в формате RFC 7807
+      required: [type, title, status]
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+
+  responses:
+    BadRequest:
+      description: Некорректный запрос
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Unauthorized:
+      description: Нет токена или он недействителен
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    GateNotFound:
+      description: Дом или ворота не найдены
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    InternalError:
+      description: Внутренняя ошибка сервера
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'

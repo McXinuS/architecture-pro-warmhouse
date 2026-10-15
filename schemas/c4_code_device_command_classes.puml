@@ -1,0 +1,155 @@
+@startuml C4_Code_Device_Command_Classes
+title Диаграмма кода (C4 Code) — отправка команды устройству (Device Management Service, Kotlin)
+
+skinparam classAttributeIconSize 0
+skinparam linetype ortho
+
+package "api" {
+    class DeviceController {
+        +getDevice(id: UUID): DeviceDto
+        +getState(id: UUID): DeviceStateDto
+        +sendCommand(id: UUID, req: SendCommandRequest): CommandDto
+        +getCommand(id: UUID, commandId: UUID): CommandDto
+    }
+    class SendCommandRequest <<data class>> {
+        +name: String
+        +params: Map<String, Any>
+        +source: CommandSource
+        +idempotencyKey: String?
+    }
+}
+
+package "application" {
+    class CommandHandler {
+        -registry: DeviceRegistry
+        -capabilityValidator: CapabilityValidator
+        -accessChecker: AccessChecker
+        -commandRepository: CommandRepository
+        -outbox: OutboxRepository
+        +handle(cmd: SendDeviceCommand): Command
+        +onAck(event: DeviceEvent)
+    }
+    class CapabilityValidator {
+        +validate(type: DeviceType, name: String, params: Map<String, Any>)
+    }
+    interface AccessChecker {
+        +assertCanControl(principal: Principal, houseId: UUID)
+    }
+    class PropertyServiceAccessChecker
+    class DeviceStateManager {
+        +getState(deviceId: UUID): DeviceState
+        +applyEvent(event: DeviceEvent)
+    }
+    class DeviceEventListener <<@RabbitListener>> {
+        +onMessage(event: DeviceEvent)
+    }
+}
+
+package "domain" {
+    class Device {
+        +id: UUID
+        +houseId: UUID
+        +roomId: UUID?
+        +serialNumber: String
+        +type: DeviceType
+        +status: DeviceStatus
+    }
+    class DeviceType {
+        +id: UUID
+        +code: String
+        +protocol: String
+        +capabilities: List<Capability>
+        +supports(commandName: String): Boolean
+    }
+    class Capability {
+        +name: String
+        +paramsSchema: JsonSchema
+    }
+    class Command {
+        +id: UUID
+        +deviceId: UUID
+        +name: String
+        +params: Map<String, Any>
+        +source: CommandSource
+        +status: CommandStatus
+        +createdAt: Instant
+        +markSent()
+        +markAcked()
+        +markFailed(reason: String)
+    }
+    enum CommandStatus {
+        PENDING
+        SENT
+        ACKED
+        FAILED
+        TIMED_OUT
+    }
+    enum CommandSource {
+        USER
+        SCENARIO
+        HEATING
+        LIGHTING
+        GATES
+        SURVEILLANCE
+    }
+    class DeviceState {
+        +deviceId: UUID
+        +reported: Map<String, Any>
+        +online: Boolean
+        +updatedAt: Instant
+    }
+}
+
+package "infrastructure" {
+    interface DeviceRegistry {
+        +findById(id: UUID): Device?
+    }
+    interface CommandRepository {
+        +save(c: Command)
+        +findById(id: UUID): Command?
+        +findByIdempotencyKey(key: String): Command?
+    }
+    interface OutboxRepository {
+        +save(msg: OutboxMessage)
+        +findPending(limit: Int): List<OutboxMessage>
+        +markPublished(id: UUID)
+    }
+    class OutboxPublisher <<@Scheduled>> {
+        +publishPending()
+    }
+    class RabbitCommandPublisher {
+        +publish(exchange: String, routingKey: String, payload: ByteArray)
+    }
+}
+
+DeviceController ..> SendCommandRequest
+DeviceController --> CommandHandler
+DeviceController --> DeviceStateManager
+CommandHandler --> DeviceRegistry
+CommandHandler --> CapabilityValidator
+CommandHandler --> AccessChecker
+CommandHandler --> CommandRepository
+CommandHandler --> OutboxRepository
+AccessChecker <|.. PropertyServiceAccessChecker
+CapabilityValidator ..> DeviceType
+DeviceType "1" *-- "many" Capability
+Device "many" --> "1" DeviceType
+Command --> CommandStatus
+Command --> CommandSource
+Command "many" --> "1" Device
+DeviceStateManager --> DeviceState
+DeviceEventListener --> DeviceStateManager
+DeviceEventListener --> CommandHandler : подтверждение команды
+OutboxPublisher --> OutboxRepository
+OutboxPublisher --> RabbitCommandPublisher
+
+note right of CommandHandler
+  Команда и запись outbox сохраняются в одной
+  транзакции. OutboxPublisher отправляет их в exchange
+  device.commands (routing key {deviceType}.{deviceId})
+  и помечает опубликованными только после publisher
+  confirm от RabbitMQ, поэтому команда не теряется
+  при недоступности брокера.
+end note
+
+@enduml

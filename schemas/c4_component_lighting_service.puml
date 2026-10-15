@@ -1,0 +1,35 @@
+@startuml C4_Component_Lighting_Service
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Диаграмма компонентов — Lighting Service (Go)
+
+Container(api_gateway, "API Gateway", "Kong", "Запросы пользователей")
+Container(device_service, "Device Management Service", "Kotlin", "Единая точка отправки команд")
+ContainerQueue(broker, "Message Broker", "RabbitMQ", "device.events")
+ContainerDb(lighting_db, "Lighting DB", "PostgreSQL", "Группы, расписания, состояние светильников")
+
+Container_Boundary(lighting_service, "Lighting Service") {
+    Component(rest_api, "Lighting REST API", "Go, net/http", "Список светильников и групп, вкл/выкл, яркость, расписания")
+    Component(group_manager, "Light Group Manager", "Go", "Группы светильников (например, «Весь первый этаж», «Подсветка въезда»)")
+    Component(schedule_manager, "Schedule Manager", "Go", "Включение/выключение по расписанию")
+    Component(light_controller, "Light Controller", "Go", "Разворачивает команду для группы в команды отдельным светильникам")
+    Component(state_consumer, "Light State Consumer", "Go, amqp091-go", "Очередь device.events с ключом light.*: актуальное состояние для быстрого ответа API")
+    Component(device_client, "Device Command Client", "Go", "Отправляет команды через Device Management Service")
+}
+
+Rel(api_gateway, rest_api, "Вызывает", "REST / JSON")
+Rel(rest_api, group_manager, "Группы")
+Rel(rest_api, light_controller, "Вкл/выкл, яркость")
+Rel(rest_api, schedule_manager, "Расписания")
+Rel(schedule_manager, light_controller, "Срабатывание расписания")
+Rel(light_controller, group_manager, "Состав группы")
+Rel(light_controller, device_client, "Команды")
+Rel(device_client, device_service, "POST /devices/{id}/commands", "REST")
+Rel(state_consumer, lighting_db, "Обновляет состояние", "SQL")
+Rel(group_manager, lighting_db, "SQL")
+Rel(schedule_manager, lighting_db, "SQL")
+Rel(broker, state_consumer, "device.events", "AMQP")
+
+@enduml

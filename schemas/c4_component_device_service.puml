@@ -1,0 +1,54 @@
+@startuml C4_Component_Device_Service
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Диаграмма компонентов — Device Management Service (Kotlin / Spring Boot)
+
+Container(api_gateway, "API Gateway", "Kong", "Запросы пользователей")
+Container(domain_services, "Heating / Lighting / Gates / Surveillance / Scenario", "Go, Kotlin", "Отправляют команды устройствам")
+Container(device_gateway, "Device Gateway", "Kotlin + HiveMQ CE", "Проверяет учётные данные устройств")
+Container(property_service, "Property Service", "Go", "Дома и доступы")
+Container(catalog_service, "Catalog & Orders Service", "Kotlin", "Серийные номера проданных модулей")
+ContainerQueue(broker, "Message Broker", "RabbitMQ", "device.commands, device.events")
+ContainerDb(device_db, "Device DB", "PostgreSQL", "Устройства, типы, модули, состояние, команды, outbox")
+
+Container_Boundary(device_service, "Device Management Service") {
+    Component(rest_api, "Device REST API", "Spring MVC", "CRUD устройств, состояние, подключение, отправка команд (202 Accepted), статус команды")
+    Component(credentials_api, "Device Credentials API", "Spring MVC", "Проверка логина/пароля MQTT-клиента для Device Gateway")
+    Component(onboarding, "Onboarding Manager", "Kotlin", "Подключение: проверка серийного номера, привязка к дому, выдача учётных данных MQTT")
+    Component(registry, "Device Registry", "Kotlin + Spring Data JPA", "Устройства, модули, привязка к дому и помещению")
+    Component(type_catalog, "Device Type Catalog", "Kotlin", "Возможности типов устройств (capabilities): команды и схема телеметрии. Новые датчики подключаются без изменения кода")
+    Component(command_handler, "Command Handler", "Kotlin", "Проверяет команду по capabilities и права, сохраняет команду и запись outbox в одной транзакции")
+    Component(outbox_publisher, "Outbox Publisher", "Kotlin, по расписанию", "Публикует команды из outbox в RabbitMQ с publisher confirms")
+    Component(event_consumer, "Device Event Consumer", "Spring AMQP", "Читает device.events: подтверждение команд, смена состояния, online/offline")
+    Component(state_manager, "Device State Manager", "Kotlin", "Последнее известное состояние устройства")
+    Component(property_client, "Property Client", "REST-клиент + Circuit Breaker", "Проверка доступа пользователя к дому")
+}
+
+Rel(api_gateway, rest_api, "Вызывает", "REST / JSON")
+Rel(domain_services, rest_api, "POST /devices/{id}/commands", "REST / JSON")
+Rel(device_gateway, credentials_api, "Проверка учётных данных", "REST")
+Rel(rest_api, onboarding, "Подключить устройство")
+Rel(rest_api, registry, "CRUD")
+Rel(rest_api, command_handler, "Отправить команду")
+Rel(rest_api, state_manager, "Получить состояние")
+Rel(credentials_api, registry, "Ищет устройство")
+Rel(onboarding, registry, "Создаёт устройство")
+Rel(onboarding, type_catalog, "Тип по модели")
+Rel(onboarding, property_client, "Проверяет дом")
+Rel(onboarding, catalog_service, "Проверяет серийный номер", "REST")
+Rel(command_handler, type_catalog, "Поддерживаемые команды")
+Rel(command_handler, registry, "Находит устройство")
+Rel(command_handler, property_client, "Проверяет права")
+Rel(property_client, property_service, "Запрос", "REST")
+Rel(event_consumer, state_manager, "Обновляет состояние")
+Rel(event_consumer, command_handler, "Обновляет статус команды")
+Rel(registry, device_db, "SQL")
+Rel(state_manager, device_db, "SQL")
+Rel(command_handler, device_db, "Команда + outbox", "SQL")
+Rel(outbox_publisher, device_db, "Читает outbox", "SQL")
+Rel(outbox_publisher, broker, "device.commands", "AMQP")
+Rel(broker, event_consumer, "device.events", "AMQP")
+
+@enduml

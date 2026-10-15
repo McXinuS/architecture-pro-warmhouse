@@ -1,0 +1,52 @@
+@startuml C4_Code_Telemetry_To_Heating_Sequence
+title Диаграмма кода (C4 Code) — от показания датчика до включения отопления
+
+autonumber
+
+participant "Датчик температуры" as Sensor
+participant "Device Gateway\n(Kotlin + HiveMQ CE)" as GW
+queue "RabbitMQ" as MQ
+participant "Telemetry Service\n(Go)" as TS
+database "TimescaleDB" as TDB
+participant "Heating Service\n(Go)" as HS
+participant "Device Management\nService (Kotlin)" as DMS
+database "Device DB" as DDB
+participant "Реле котла" as Relay
+participant "Notification Service\n(Go)" as NS
+
+Sensor -> GW : MQTT publish\nhouses/{houseId}/devices/{id}/telemetry\n{"metrics": {"temperature": 16.5}}
+GW -> GW : Publish Interceptor → адаптер →\nканоничный формат (device_id, metric, value, unit, ts)
+GW -> MQ : exchange telemetry.raw
+MQ -> TS : очередь telemetry.raw
+TS -> TS : Валидация, нормализация
+TS -> TDB : INSERT (пакетом)
+TS -> MQ : exchange telemetry.normalized\nkey temperature.temp_sensor
+
+MQ -> HS : очередь heating.temperature\n(binding temperature.*)
+HS -> HS : Цель помещения 21°C,\nтекущая 16.5°C < 21°C − гистерезис
+
+alt Температура ниже порога замерзания (< 5°C)
+    HS -> MQ : exchange notifications\n{type: FREEZE_RISK}
+    MQ -> NS : очередь notifications
+    NS -> NS : Push и email владельцу
+end
+
+HS -> DMS : POST /devices/{relayId}/commands\n{name: "turn_on", source: "HEATING"}
+DMS -> DMS : Проверка capabilities и прав
+DMS -> DDB : INSERT command (PENDING) + outbox\n(одна транзакция)
+DMS --> HS : 202 Accepted {commandId}
+DMS -> MQ : Outbox Publisher → exchange device.commands
+MQ -> GW : очередь device.commands
+GW -> Relay : MQTT publish\nhouses/{houseId}/devices/{relayId}/commands
+Relay --> GW : MQTT publish .../commands/ack\n{"status": "ok", "state": {"power": "on"}}
+GW -> MQ : exchange device.events\nkey heating.command_acked
+MQ -> DMS : очередь device.events
+DMS -> DDB : command = ACKED,\nобновление состояния устройства
+
+note over HS, Relay
+  Датчики сами присылают данные (push), сервисы реагируют на события.
+  Все команды идут через Device Management Service: он один проверяет их
+  и отслеживает статус.
+end note
+
+@enduml

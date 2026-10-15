@@ -1,0 +1,144 @@
+@startuml C4_Container_To_Be
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Диаграмма контейнеров (C4 Container) — Целевая экосистема «Тёплый дом» (To-Be)
+
+Person(user, "Пользователь", "Владелец дома / член семьи. Подключает устройства, настраивает сценарии, смотрит телеметрию")
+Person(support, "Сотрудник поддержки", "Помогает клиентам, просматривает состояние их систем (с правами доступа)")
+
+System_Ext(partner_devices, "Устройства партнёров и датчики", "Отопление, свет, ворота, камеры, датчики. Работают по MQTT / HTTP / через Zigbee-хаб")
+System_Ext(cameras, "IP-камеры", "Видеопотоки RTSP / ONVIF")
+System_Ext(payment, "Платёжный провайдер", "Приём онлайн-платежей за комплекты")
+System_Ext(push_email, "Push / Email провайдеры", "FCM / APNs, SMTP")
+
+System_Boundary(warmhouse, "Экосистема «Тёплый дом» (SaaS)") {
+
+    Container(web_app, "Web-приложение", "React SPA", "Личный кабинет: устройства, сценарии, телеметрия, магазин комплектов")
+    Container(mobile_app, "Мобильное приложение", "iOS / Android", "Те же функции + push-уведомления, сопряжение устройств по QR")
+
+    Container(api_gateway, "API Gateway", "Kong", "Единая точка входа: маршрутизация, проверка JWT, rate limiting. Постепенно переключает маршруты с монолита на микросервисы")
+
+    Container(iam_service, "IAM Service", "Kotlin / Spring Boot", "Регистрация, аутентификация (OAuth2/OIDC, JWT), роли")
+    ContainerDb(iam_db, "IAM DB", "PostgreSQL", "Пользователи, роли, токены")
+
+    Container(property_service, "Property Service", "Go", "Иерархия: посёлок → дом → помещение; участники дома и их роли")
+    ContainerDb(property_db, "Property DB", "PostgreSQL", "Посёлки, дома, помещения, участники")
+
+    Container(device_service, "Device Management Service", "Kotlin / Spring Boot", "Реестр устройств и типов, самостоятельное подключение, состояние, единая точка отправки команд")
+    ContainerDb(device_db, "Device DB", "PostgreSQL", "Устройства, типы, модули, состояние, команды")
+
+    Container(device_gateway, "Device Gateway", "Kotlin + встроенный HiveMQ CE", "MQTT-брокер внутри процесса, адаптеры протоколов, мост в RabbitMQ, доставка команд на устройства")
+
+    Container(telemetry_service, "Telemetry Service", "Go", "Приём, валидация и хранение телеметрии, история и агрегаты")
+    ContainerDb(telemetry_db, "Telemetry DB", "TimescaleDB", "Временные ряды измерений")
+
+    Container(heating_service, "Heating Service", "Go", "Отопление: целевые температуры, режимы, расписания, терморегулирование, защита от замерзания")
+    ContainerDb(heating_db, "Heating DB", "PostgreSQL", "Профили и расписания отопления")
+
+    Container(lighting_service, "Lighting Service", "Go", "Освещение: группы светильников, вкл/выкл, яркость, расписания")
+    ContainerDb(lighting_db, "Lighting DB", "PostgreSQL", "Группы и расписания освещения")
+
+    Container(gates_service, "Gates Service", "Go", "Ворота и шлагбаумы: открытие/закрытие, гостевые доступы, журнал въездов")
+    ContainerDb(gates_db, "Gates DB", "PostgreSQL", "Доступы, журнал событий ворот")
+
+    Container(surveillance_service, "Surveillance Service", "Go", "Видеонаблюдение: доступ к видеопотокам, журнал событий движения")
+    ContainerDb(surveillance_db, "Surveillance DB", "PostgreSQL", "Доступы к камерам, события движения")
+
+    Container(scenario_service, "Scenario Service", "Kotlin / Spring Boot", "Пользовательские сценарии «если — то»: хранение и исполнение по событиям")
+    ContainerDb(scenario_db, "Scenario DB", "PostgreSQL", "Сценарии, триггеры, действия")
+
+    Container(notification_service, "Notification Service", "Go", "Рассылка push и email по событиям")
+
+    Container(catalog_service, "Catalog & Orders Service", "Kotlin / Spring Boot", "Каталог комплектов, заказы, привязка серийных номеров к аккаунту")
+    ContainerDb(catalog_db, "Catalog DB", "PostgreSQL", "Комплекты, заказы, серийные номера")
+
+    ContainerDb(redis, "Cache", "Redis", "Кэш метаданных устройств, индекс триггеров, дедупликация уведомлений")
+
+    ContainerQueue(broker, "Message Broker", "RabbitMQ", "Exchanges: telemetry.raw, telemetry.normalized, device.commands, device.events, notifications; на время миграции — legacy.sensors")
+
+    Container(legacy_monolith, "Legacy-монолит «Тёплый дом»", "Go / Gin", "Текущая система. Работает за API Gateway, пока её маршруты не перенесены в микросервисы; на время миграции публикует события в RabbitMQ")
+    ContainerDb(legacy_db, "Legacy DB", "PostgreSQL", "Таблица sensors (+ device_id). Выводится из эксплуатации после переноса")
+    Container(temperature_api, "temperature-api", "Go", "Эмулятор датчика температуры (GET /temperature)")
+}
+
+' --- Клиенты ---
+Rel(user, web_app, "Использует", "HTTPS")
+Rel(user, mobile_app, "Использует", "HTTPS")
+Rel(support, web_app, "Использует (роль support)", "HTTPS")
+Rel(web_app, api_gateway, "Запросы API", "HTTPS / JSON")
+Rel(mobile_app, api_gateway, "Запросы API", "HTTPS / JSON")
+
+' --- Gateway -> сервисы ---
+Rel(api_gateway, iam_service, "Вход, токены", "REST")
+Rel(api_gateway, property_service, "Дома и помещения", "REST")
+Rel(api_gateway, device_service, "Устройства, подключение, команды", "REST")
+Rel(api_gateway, telemetry_service, "История телеметрии", "REST")
+Rel(api_gateway, heating_service, "Отопление", "REST")
+Rel(api_gateway, lighting_service, "Освещение", "REST")
+Rel(api_gateway, gates_service, "Ворота", "REST")
+Rel(api_gateway, surveillance_service, "Камеры", "REST")
+Rel(api_gateway, scenario_service, "Сценарии", "REST")
+Rel(api_gateway, catalog_service, "Каталог и заказы", "REST")
+Rel(api_gateway, legacy_monolith, "Ещё не перенесённые маршруты /api/v1/sensors", "REST")
+
+' --- Сервисы -> БД ---
+Rel(iam_service, iam_db, "SQL")
+Rel(property_service, property_db, "SQL")
+Rel(device_service, device_db, "SQL")
+Rel(telemetry_service, telemetry_db, "SQL")
+Rel(heating_service, heating_db, "SQL")
+Rel(lighting_service, lighting_db, "SQL")
+Rel(gates_service, gates_db, "SQL")
+Rel(surveillance_service, surveillance_db, "SQL")
+Rel(scenario_service, scenario_db, "SQL")
+Rel(catalog_service, catalog_db, "SQL")
+Rel(legacy_monolith, legacy_db, "SQL")
+Rel(telemetry_service, redis, "Метаданные устройств")
+Rel(scenario_service, redis, "Индекс триггеров")
+Rel(notification_service, redis, "Дедупликация")
+
+' --- Синхронные вызовы между сервисами ---
+Rel(heating_service, device_service, "Команды котлу / реле", "REST")
+Rel(lighting_service, device_service, "Команды светильникам", "REST")
+Rel(gates_service, device_service, "Команды воротам", "REST")
+Rel(surveillance_service, device_service, "Список камер, команды камерам", "REST")
+Rel(scenario_service, device_service, "Команды из сценариев", "REST")
+Rel(device_service, property_service, "Проверка доступа к дому", "REST")
+Rel(device_service, catalog_service, "Проверка серийного номера при подключении", "REST")
+Rel(device_gateway, device_service, "Проверка учётных данных устройства", "REST")
+Rel(telemetry_service, device_service, "Метаданные устройства", "REST")
+Rel(iam_service, property_service, "Роли пользователя в домах", "REST")
+Rel(notification_service, iam_service, "Контакты пользователей", "REST")
+
+' --- Асинхронное взаимодействие через RabbitMQ ---
+Rel(device_gateway, broker, "Публикует telemetry.raw, device.events", "AMQP")
+Rel(broker, device_gateway, "Очередь device.commands", "AMQP")
+Rel(device_service, broker, "Публикует device.commands (outbox)", "AMQP")
+Rel(broker, device_service, "Очередь device.events", "AMQP")
+Rel(broker, telemetry_service, "Очередь telemetry.raw", "AMQP")
+Rel(telemetry_service, broker, "Публикует telemetry.normalized", "AMQP")
+Rel(broker, heating_service, "Очередь telemetry.normalized (temperature.*)", "AMQP")
+Rel(broker, lighting_service, "Очередь device.events (light.*)", "AMQP")
+Rel(broker, gates_service, "Очередь device.events (gate.*)", "AMQP")
+Rel(broker, surveillance_service, "Очередь device.events (camera.*)", "AMQP")
+Rel(broker, scenario_service, "Очереди telemetry.normalized, device.events", "AMQP")
+Rel(heating_service, broker, "Публикует notifications", "AMQP")
+Rel(gates_service, broker, "Публикует notifications", "AMQP")
+Rel(surveillance_service, broker, "Публикует notifications", "AMQP")
+Rel(scenario_service, broker, "Публикует notifications", "AMQP")
+Rel(broker, notification_service, "Очередь notifications", "AMQP")
+
+' --- Внешний мир ---
+Rel(partner_devices, device_gateway, "Телеметрия и статусы; получают команды", "MQTT over TLS / HTTPS")
+Rel(surveillance_service, cameras, "Видеопотоки", "RTSP / ONVIF")
+Rel(catalog_service, payment, "Оплата заказов", "HTTPS")
+Rel(notification_service, push_email, "Отправка уведомлений", "HTTPS / SMTP")
+
+' --- Переходный период ---
+Rel(legacy_monolith, temperature_api, "Опрос температуры (pull)", "HTTP")
+Rel(legacy_monolith, broker, "Публикует legacy.sensors и telemetry.raw", "AMQP")
+Rel(broker, device_service, "Очередь legacy.sensors", "AMQP")
+
+@enduml

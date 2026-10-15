@@ -1,0 +1,332 @@
+openapi: 3.1.0
+info:
+  title: Scenario Service API
+  version: 1.0.0
+  description: |
+    Пользовательские сценарии автоматизации «если — то». Сценарий состоит из триггеров
+    (порог телеметрии, событие устройства, расписание) и действий (команда устройству, уведомление).
+    Сценарии исполняются по событиям из RabbitMQ; команды отправляются через Device Management Service.
+
+    Реализация: Kotlin / Spring Boot.
+servers:
+  - url: https://api.warmhouse.example/api/v1
+    description: Через API Gateway
+security:
+  - bearerAuth: []
+tags:
+  - name: scenarios
+
+paths:
+  /houses/{houseId}/scenarios:
+    parameters:
+      - $ref: '#/components/parameters/HouseId'
+    post:
+      tags: [scenarios]
+      operationId: createScenario
+      summary: Создать сценарий
+      description: |
+        Сервис проверяет, что устройства из триггеров и действий принадлежат дому,
+        метрики есть у типа устройства, а команды поддерживаются. Сценарий, действия которого
+        запускают его же триггеры, отклоняется (защита от зацикливания).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScenarioCreate'
+            examples:
+              coldLivingRoom:
+                summary: Если в гостиной холоднее 18 °C — включить котёл и уведомить
+                value:
+                  name: Холодно в гостиной
+                  conditionLogic: ALL
+                  enabled: true
+                  triggers:
+                    - type: THRESHOLD
+                      deviceId: 3d9a7b52-4c1e-4f8a-9b6d-2e7f1a0c5b84
+                      metric: temperature
+                      operator: LT
+                      threshold: 18
+                  actions:
+                    - type: COMMAND
+                      deviceId: 9e2b6c41-7d3a-4f5e-8a1b-0c9d8e7f6a52
+                      commandName: turn_on
+                      params: {}
+                    - type: NOTIFY
+                      message: В гостиной ниже 18 °C, котёл включён
+              eveningLight:
+                summary: Каждый день в 19:00 включить подсветку въезда
+                value:
+                  name: Вечерняя подсветка
+                  conditionLogic: ANY
+                  enabled: true
+                  triggers:
+                    - type: SCHEDULE
+                      cron: '0 0 19 * * *'
+                  actions:
+                    - type: COMMAND
+                      deviceId: 7b6a5c4d-3e2f-4a1b-9c8d-7e6f5a4b3c2d
+                      commandName: turn_on
+                      params: { brightness: 100 }
+      responses:
+        '201':
+          description: Сценарий создан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Scenario'
+              examples:
+                created:
+                  value:
+                    id: 9f8e7d6c-5b4a-4392-8170-6f5e4d3c2b1a
+                    houseId: 6f1c2a9e-1b8e-4a57-9b0e-3a6d2b7c1f10
+                    name: Холодно в гостиной
+                    conditionLogic: ALL
+                    enabled: true
+                    triggers:
+                      - type: THRESHOLD
+                        deviceId: 3d9a7b52-4c1e-4f8a-9b6d-2e7f1a0c5b84
+                        metric: temperature
+                        operator: LT
+                        threshold: 18
+                    actions:
+                      - type: COMMAND
+                        deviceId: 9e2b6c41-7d3a-4f5e-8a1b-0c9d8e7f6a52
+                        commandName: turn_on
+                        params: {}
+                      - type: NOTIFY
+                        message: В гостиной ниже 18 °C, котёл включён
+                    createdBy: 2a3b4c5d-6e7f-4a8b-9c0d-1e2f3a4b5c6d
+                    createdAt: '2026-10-14T12:30:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/InvalidScenario'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /houses/{houseId}/scenarios/{scenarioId}:
+    parameters:
+      - $ref: '#/components/parameters/HouseId'
+      - name: scenarioId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [scenarios]
+      operationId: updateScenario
+      summary: Включить, выключить или переименовать сценарий
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema:
+              $ref: '#/components/schemas/ScenarioPatch'
+            examples:
+              disable:
+                summary: Временно выключить сценарий
+                value: { enabled: false }
+      responses:
+        '200':
+          description: Сценарий обновлён
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Scenario'
+              examples:
+                disabled:
+                  value:
+                    id: 9f8e7d6c-5b4a-4392-8170-6f5e4d3c2b1a
+                    houseId: 6f1c2a9e-1b8e-4a57-9b0e-3a6d2b7c1f10
+                    name: Холодно в гостиной
+                    conditionLogic: ALL
+                    enabled: false
+                    triggers:
+                      - type: THRESHOLD
+                        deviceId: 3d9a7b52-4c1e-4f8a-9b6d-2e7f1a0c5b84
+                        metric: temperature
+                        operator: LT
+                        threshold: 18
+                    actions:
+                      - type: COMMAND
+                        deviceId: 9e2b6c41-7d3a-4f5e-8a1b-0c9d8e7f6a52
+                        commandName: turn_on
+                        params: {}
+                    createdBy: 2a3b4c5d-6e7f-4a8b-9c0d-1e2f3a4b5c6d
+                    createdAt: '2026-10-14T12:30:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    HouseId:
+      name: houseId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  schemas:
+    Trigger:
+      type: object
+      required: [type]
+      properties:
+        type: { type: string, enum: [THRESHOLD, EVENT, SCHEDULE] }
+        deviceId:
+          type: string
+          format: uuid
+          description: Для THRESHOLD и EVENT
+        metric:
+          type: string
+          description: Для THRESHOLD
+        operator:
+          type: string
+          enum: [LT, GT, EQ]
+          description: Для THRESHOLD
+        threshold:
+          type: number
+          description: Для THRESHOLD
+        eventType:
+          type: string
+          description: Для EVENT, например gate.opened
+        cron:
+          type: string
+          description: Для SCHEDULE (Spring cron, 6 полей)
+
+    Action:
+      type: object
+      required: [type]
+      properties:
+        type: { type: string, enum: [COMMAND, NOTIFY] }
+        deviceId:
+          type: string
+          format: uuid
+          description: Для COMMAND
+        commandName:
+          type: string
+          description: Для COMMAND
+        params:
+          type: object
+          additionalProperties: true
+        message:
+          type: string
+          description: Для NOTIFY
+
+    ScenarioCreate:
+      type: object
+      required: [name, conditionLogic, triggers, actions]
+      properties:
+        name: { type: string, maxLength: 255 }
+        conditionLogic:
+          type: string
+          enum: [ALL, ANY]
+          description: ALL — должны выполниться все триггеры, ANY — любой
+        enabled: { type: boolean, default: true }
+        triggers:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/Trigger'
+        actions:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/Action'
+
+    ScenarioPatch:
+      type: object
+      minProperties: 1
+      properties:
+        name: { type: string, maxLength: 255 }
+        enabled: { type: boolean }
+
+    Scenario:
+      allOf:
+        - $ref: '#/components/schemas/ScenarioCreate'
+        - type: object
+          required: [id, houseId, enabled, createdBy, createdAt]
+          properties:
+            id: { type: string, format: uuid }
+            houseId: { type: string, format: uuid }
+            createdBy: { type: string, format: uuid }
+            createdAt: { type: string, format: date-time }
+
+    Problem:
+      type: object
+      description: Ошибка в формате RFC 7807
+      required: [type, title, status]
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+
+  responses:
+    BadRequest:
+      description: Некорректный запрос
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Unauthorized:
+      description: Нет токена или он недействителен
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Forbidden:
+      description: Нет доступа к дому
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    NotFound:
+      description: Дом или сценарий не найдены
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    InvalidScenario:
+      description: Сценарий не прошёл проверку
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            unsupportedCommand:
+              value:
+                type: https://api.warmhouse.example/problems/invalid-scenario
+                title: Некорректный сценарий
+                status: 422
+                detail: 'actions[0]: тип temp_sensor не поддерживает команду turn_on'
+            loop:
+              value:
+                type: https://api.warmhouse.example/problems/invalid-scenario
+                title: Некорректный сценарий
+                status: 422
+                detail: Действие сценария запускает его собственный триггер
+    InternalError:
+      description: Внутренняя ошибка сервера
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'

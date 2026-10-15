@@ -1,0 +1,234 @@
+openapi: 3.1.0
+info:
+  title: Telemetry Service API
+  version: 1.0.0
+  description: |
+    Чтение телеметрии устройств: последние значения и история с агрегацией.
+    Данные поступают в сервис асинхронно (RabbitMQ, exchange `telemetry.raw`) и хранятся в TimescaleDB.
+
+    Реализация: Go.
+servers:
+  - url: https://api.warmhouse.example/api/v1
+    description: Через API Gateway
+security:
+  - bearerAuth: []
+tags:
+  - name: telemetry
+
+paths:
+  /telemetry/devices/{deviceId}/latest:
+    parameters:
+      - $ref: '#/components/parameters/DeviceId'
+    get:
+      tags: [telemetry]
+      operationId: getLatestTelemetry
+      summary: Последние значения всех метрик устройства
+      parameters:
+        - name: metric
+          in: query
+          description: Вернуть только одну метрику
+          schema: { type: string, examples: [temperature] }
+      responses:
+        '200':
+          description: Последние значения
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LatestTelemetry'
+              examples:
+                sensor:
+                  value:
+                    deviceId: 3d9a7b52-4c1e-4f8a-9b6d-2e7f1a0c5b84
+                    readings:
+                      - metric: temperature
+                        value: 21.4
+                        unit: °C
+                        ts: '2026-10-14T12:05:00Z'
+                      - metric: humidity
+                        value: 43
+                        unit: '%'
+                        ts: '2026-10-14T12:05:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Устройство не найдено или от него ещё нет данных
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              examples:
+                noData:
+                  value:
+                    type: https://api.warmhouse.example/problems/no-telemetry
+                    title: Нет данных
+                    status: 404
+                    detail: От устройства 3d9a7b52-4c1e-4f8a-9b6d-2e7f1a0c5b84 ещё не поступало данных
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /telemetry/devices/{deviceId}/history:
+    parameters:
+      - $ref: '#/components/parameters/DeviceId'
+    get:
+      tags: [telemetry]
+      operationId: getTelemetryHistory
+      summary: История метрики за период
+      description: |
+        Для интервала `raw` возвращаются исходные значения (не более 10 000 точек),
+        для остальных — агрегаты avg/min/max за каждый интервал. Период не длиннее 366 дней.
+      parameters:
+        - name: metric
+          in: query
+          required: true
+          schema: { type: string, examples: [temperature] }
+        - name: from
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+        - name: interval
+          in: query
+          schema:
+            type: string
+            enum: [raw, 1m, 1h, 1d]
+            default: 1h
+      responses:
+        '200':
+          description: Точки временного ряда
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TelemetryHistory'
+              examples:
+                hourly:
+                  value:
+                    deviceId: 3d9a7b52-4c1e-4f8a-9b6d-2e7f1a0c5b84
+                    metric: temperature
+                    unit: °C
+                    interval: 1h
+                    points:
+                      - ts: '2026-10-14T00:00:00Z'
+                        avg: 19.8
+                        min: 19.5
+                        max: 20.1
+                      - ts: '2026-10-14T01:00:00Z'
+                        avg: 19.6
+                        min: 19.4
+                        max: 19.9
+        '400':
+          description: Некорректный период или интервал
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              examples:
+                badRange:
+                  value:
+                    type: https://api.warmhouse.example/problems/validation
+                    title: Некорректный период
+                    status: 400
+                    detail: Параметр from должен быть раньше to
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Устройство не найдено
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    DeviceId:
+      name: deviceId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  schemas:
+    Reading:
+      type: object
+      required: [metric, value, unit, ts]
+      properties:
+        metric: { type: string }
+        value: { type: number }
+        unit: { type: string }
+        ts: { type: string, format: date-time }
+
+    LatestTelemetry:
+      type: object
+      required: [deviceId, readings]
+      properties:
+        deviceId: { type: string, format: uuid }
+        readings:
+          type: array
+          items:
+            $ref: '#/components/schemas/Reading'
+
+    HistoryPoint:
+      type: object
+      required: [ts]
+      properties:
+        ts: { type: string, format: date-time }
+        value: { type: number, description: Только для interval=raw }
+        avg: { type: number }
+        min: { type: number }
+        max: { type: number }
+
+    TelemetryHistory:
+      type: object
+      required: [deviceId, metric, unit, interval, points]
+      properties:
+        deviceId: { type: string, format: uuid }
+        metric: { type: string }
+        unit: { type: string }
+        interval: { type: string, enum: [raw, 1m, 1h, 1d] }
+        points:
+          type: array
+          items:
+            $ref: '#/components/schemas/HistoryPoint'
+
+    Problem:
+      type: object
+      description: Ошибка в формате RFC 7807
+      required: [type, title, status]
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+
+  responses:
+    Unauthorized:
+      description: Нет токена или он недействителен
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Forbidden:
+      description: Нет доступа к дому, которому принадлежит устройство
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    InternalError:
+      description: Внутренняя ошибка сервера
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'

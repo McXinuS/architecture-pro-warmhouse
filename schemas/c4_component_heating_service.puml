@@ -1,0 +1,40 @@
+@startuml C4_Component_Heating_Service
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Диаграмма компонентов — Heating Service (Go)
+
+Container(api_gateway, "API Gateway", "Kong", "Запросы пользователей")
+Container(device_service, "Device Management Service", "Kotlin", "Единая точка отправки команд")
+ContainerQueue(broker, "Message Broker", "RabbitMQ", "telemetry.normalized, notifications")
+ContainerDb(heating_db, "Heating DB", "PostgreSQL", "Профили и расписания")
+
+Container_Boundary(heating_service, "Heating Service") {
+    Component(rest_api, "Heating REST API", "Go, net/http", "Включить/выключить отопление, целевая температура, режим, расписание")
+    Component(profile_manager, "Heating Profile Manager", "Go", "Режимы: комфорт, эко, отпуск; целевые температуры по помещениям")
+    Component(schedule_manager, "Schedule Manager", "Go", "Переключение профилей по расписанию")
+    Component(telemetry_consumer, "Temperature Consumer", "Go, amqp091-go", "Очередь telemetry.normalized с ключом temperature.*")
+    Component(controller, "Thermostat Controller", "Go", "Гистерезис: сравнивает текущую и целевую температуру, решает вкл/выкл")
+    Component(freeze_guard, "Freeze Protection", "Go", "Критически низкая температура → принудительный нагрев и тревога")
+    Component(device_client, "Device Command Client", "Go", "Отправляет команды котлу/реле через Device Management Service")
+    Component(alert_publisher, "Alert Publisher", "Go, amqp091-go", "Публикует тревоги в notifications")
+}
+
+Rel(api_gateway, rest_api, "Вызывает", "REST / JSON")
+Rel(rest_api, profile_manager, "Профиль и цель")
+Rel(rest_api, controller, "Ручное вкл/выкл")
+Rel(schedule_manager, profile_manager, "Активирует профиль")
+Rel(telemetry_consumer, controller, "Текущая температура")
+Rel(telemetry_consumer, freeze_guard, "Текущая температура")
+Rel(controller, profile_manager, "Целевая температура")
+Rel(controller, device_client, "Команда on/off")
+Rel(freeze_guard, device_client, "Принудительный нагрев")
+Rel(freeze_guard, alert_publisher, "Тревога")
+Rel(device_client, device_service, "POST /devices/{id}/commands", "REST")
+Rel(profile_manager, heating_db, "SQL")
+Rel(schedule_manager, heating_db, "SQL")
+Rel(broker, telemetry_consumer, "telemetry.normalized", "AMQP")
+Rel(alert_publisher, broker, "notifications", "AMQP")
+
+@enduml

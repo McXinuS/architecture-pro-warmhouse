@@ -1,0 +1,740 @@
+openapi: 3.1.0
+info:
+  title: Device Management Service API
+  version: 1.0.0
+  description: |
+    Реестр устройств и типов устройств, самостоятельное подключение устройств пользователем
+    и отправка команд.
+
+    Сервис — единая точка отправки команд устройствам. Heating, Lighting, Gates, Surveillance
+    и Scenario не обращаются к устройствам напрямую, а вызывают `POST /devices/{deviceId}/commands`.
+    Команда сохраняется со статусом `PENDING`, публикуется в RabbitMQ (exchange `device.commands`)
+    и доставляется устройству через Device Gateway. Статус меняется по событиям из `device.events`.
+
+    Реализация: Kotlin / Spring Boot.
+servers:
+  - url: https://api.warmhouse.example/api/v1
+    description: Через API Gateway (клиенты)
+  - url: http://device-management:8080/api/v1
+    description: Внутри кластера (другие микросервисы)
+security:
+  - bearerAuth: []
+tags:
+  - name: devices
+    description: Устройства и их подключение
+  - name: commands
+    description: Команды устройствам
+  - name: device-types
+    description: Типы устройств и их возможности
+
+paths:
+  /devices/onboarding:
+    post:
+      tags: [devices]
+      operationId: onboardDevice
+      summary: Подключить устройство к дому
+      description: |
+        Пользователь подключает купленное устройство сам: вводит или сканирует (QR) серийный номер
+        и код активации. Сервис проверяет номер в Catalog & Orders Service, определяет тип устройства,
+        привязывает его к дому и выдаёт учётные данные для подключения к MQTT-брокеру.
+        Пароль MQTT возвращается только в этом ответе.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OnboardingRequest'
+            examples:
+              thermostat:
+                summary: Подключение датчика температуры в гостиной
+                value:
+                  serialNumber: WH-TS-2026-000153
+                  activationCode: 7F3K-92QD
+                  houseId: 6f1c2a9e-1b8e-4a57-9b0e-3a6d2b7c1f10
+                  roomId: 0b5d7c1e-2f4a-4c3b-8e9d-1a2b3c4d5e6f
+                  name: Датчик в гостиной
+      responses:
+        '201':
+          description: Устройство подключено
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OnboardingResponse'
+              examples:
+                created:
+                  value:
+                    device:
+                      id: 3d9a7b52-4c1e-4f8a-9b6d-2e7f1a0c5b84
+                      houseId: 6f1c2a9e-1b8e-4a57-9b0e-3a6d2b7c1f10
+                      roomId: 0b5d7c1e-2f4a-4c3b-8e9d-1a2b3c4d5e6f
+                      typeCode: temp_sensor
+                      name: Датчик в гостиной
+                      serialNumber: WH-TS-2026-000153
+                      status: PENDING
+                      state:
+                        online: false
+                        reported: {}
+                        updatedAt: null
+                      createdAt: '2026-10-14T12:00:00Z'
+                    mqtt:
+                      host: mqtt.warmhouse.example
+                      port: 8883
+                      clientId: dev-3d9a7b52
+                      username: dev-3d9a7b52
+                      password: 'q8Zr!2mLx0Vt'
+                      topicPrefix: houses/6f1c2a9e-1b8e-4a57-9b0e-3a6d2b7c1f10/devices/3d9a7b52-4c1e-4f8a-9b6d-2e7f1a0c5b84
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Серийный номер не найден или код активации неверен
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              examples:
+                unknownSerial:
+                  value:
+                    type: https://api.warmhouse.example/problems/serial-not-found
+                    title: Серийный номер не найден
+                    status: 404
+                    detail: Устройство WH-TS-2026-000153 не найдено или код активации неверен
+        '409':
+          description: Устройство уже подключено к другому дому
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              examples:
+                alreadyActivated:
+                  value:
+                    type: https://api.warmhouse.example/problems/already-activated
+                    title: Устройство уже подключено
+                    status: 409
+                    detail: Серийный номер WH-TS-2026-000153 уже активирован
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /devices:
+    get:
+      tags: [devices]
+      operationId: listDevices
+      summary: Список устройств дома
+      parameters:
+        - name: houseId
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: roomId
+          in: query
+          schema: { type: string, format: uuid }
+        - name: type
+          in: query
+          description: Код типа устройства
+          schema: { type: string, examples: [heating_relay] }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Список устройств
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DevicePage'
+              examples:
+                twoDevices:
+                  value:
+                    items:
+                      - id: 3d9a7b52-4c1e-4f8a-9b6d-2e7f1a0c5b84
+                        houseId: 6f1c2a9e-1b8e-4a57-9b0e-3a6d2b7c1f10
+                        roomId: 0b5d7c1e-2f4a-4c3b-8e9d-1a2b3c4d5e6f
+                        typeCode: temp_sensor
+                        name: Датчик в гостиной
+                        serialNumber: WH-TS-2026-000153
+                        status: ACTIVE
+                        state:
+                          online: true
+                          reported: { temperature: 21.4 }
+                          updatedAt: '2026-10-14T12:05:00Z'
+                        createdAt: '2026-10-14T12:00:00Z'
+                      - id: 9e2b6c41-7d3a-4f5e-8a1b-0c9d8e7f6a52
+                        houseId: 6f1c2a9e-1b8e-4a57-9b0e-3a6d2b7c1f10
+                        roomId: null
+                        typeCode: heating_relay
+                        name: Реле котла
+                        serialNumber: WH-HR-2026-000042
+                        status: ACTIVE
+                        state:
+                          online: true
+                          reported: { power: 'off' }
+                          updatedAt: '2026-10-14T12:04:30Z'
+                        createdAt: '2026-10-01T09:00:00Z'
+                    total: 2
+                    limit: 50
+                    offset: 0
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /devices/{deviceId}:
+    parameters:
+      - $ref: '#/components/parameters/DeviceId'
+    get:
+      tags: [devices]
+      operationId: getDevice
+      summary: Устройство и его текущее состояние
+      responses:
+        '200':
+          description: Устройство
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Device'
+              examples:
+                relay:
+                  value:
+                    id: 9e2b6c41-7d3a-4f5e-8a1b-0c9d8e7f6a52
+                    houseId: 6f1c2a9e-1b8e-4a57-9b0e-3a6d2b7c1f10
+                    roomId: null
+                    typeCode: heating_relay
+                    name: Реле котла
+                    serialNumber: WH-HR-2026-000042
+                    status: ACTIVE
+                    state:
+                      online: true
+                      reported: { power: 'off' }
+                      updatedAt: '2026-10-14T12:04:30Z'
+                    createdAt: '2026-10-01T09:00:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/DeviceNotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /devices/{deviceId}/commands:
+    parameters:
+      - $ref: '#/components/parameters/DeviceId'
+    post:
+      tags: [commands]
+      operationId: sendCommand
+      summary: Отправить команду устройству
+      description: |
+        Команда проверяется по возможностям типа устройства (`DeviceType.capabilities`) и правам
+        вызывающего, сохраняется и отправляется асинхронно. Ответ `202` означает, что команда принята,
+        а не выполнена: результат смотрите в `GET /devices/{deviceId}/commands/{commandId}`.
+
+        Повторный запрос с тем же `Idempotency-Key` не создаёт новую команду, а возвращает
+        существующую с кодом `200`.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: Ключ идемпотентности, уникальный для команды
+          schema: { type: string, maxLength: 64 }
+          example: 5b0e1c7a-heating-on-20261014T1210
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendCommandRequest'
+            examples:
+              heatingOn:
+                summary: Heating Service включает котёл
+                value:
+                  name: turn_on
+                  params: {}
+                  source: HEATING
+              dimLight:
+                summary: Пользователь меняет яркость светильника
+                value:
+                  name: set_brightness
+                  params: { brightness: 40 }
+                  source: USER
+      responses:
+        '202':
+          description: Команда принята к выполнению
+          headers:
+            Location:
+              description: Адрес для проверки статуса команды
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Command'
+              examples:
+                accepted:
+                  value:
+                    id: c1f4e8a2-6b3d-4e7f-9a0b-1c2d3e4f5a6b
+                    deviceId: 9e2b6c41-7d3a-4f5e-8a1b-0c9d8e7f6a52
+                    name: turn_on
+                    params: {}
+                    source: HEATING
+                    status: PENDING
+                    createdAt: '2026-10-14T12:10:00Z'
+                    completedAt: null
+                    error: null
+        '200':
+          description: Команда с таким `Idempotency-Key` уже была создана; возвращается она же
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Command'
+              examples:
+                repeated:
+                  summary: Повтор запроса после того, как команда уже выполнена
+                  value:
+                    id: c1f4e8a2-6b3d-4e7f-9a0b-1c2d3e4f5a6b
+                    deviceId: 9e2b6c41-7d3a-4f5e-8a1b-0c9d8e7f6a52
+                    name: turn_on
+                    params: {}
+                    source: HEATING
+                    status: ACKED
+                    createdAt: '2026-10-14T12:10:00Z'
+                    completedAt: '2026-10-14T12:10:02Z'
+                    error: null
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/DeviceNotFound'
+        '409':
+          description: Устройство офлайн или отключено — команда не принимается, чтобы не выполнить её с опозданием
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              examples:
+                offline:
+                  value:
+                    type: https://api.warmhouse.example/problems/device-offline
+                    title: Устройство недоступно
+                    status: 409
+                    detail: Реле котла не на связи с 2026-10-14T11:40:00Z
+        '422':
+          description: Тип устройства не поддерживает команду или параметры не соответствуют схеме
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              examples:
+                unsupported:
+                  value:
+                    type: https://api.warmhouse.example/problems/unsupported-command
+                    title: Команда не поддерживается
+                    status: 422
+                    detail: Тип heating_relay не поддерживает команду set_brightness
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /devices/{deviceId}/commands/{commandId}:
+    parameters:
+      - $ref: '#/components/parameters/DeviceId'
+      - name: commandId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [commands]
+      operationId: getCommand
+      summary: Статус команды
+      responses:
+        '200':
+          description: Команда
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Command'
+              examples:
+                acked:
+                  summary: Устройство подтвердило выполнение
+                  value:
+                    id: c1f4e8a2-6b3d-4e7f-9a0b-1c2d3e4f5a6b
+                    deviceId: 9e2b6c41-7d3a-4f5e-8a1b-0c9d8e7f6a52
+                    name: turn_on
+                    params: {}
+                    source: HEATING
+                    status: ACKED
+                    createdAt: '2026-10-14T12:10:00Z'
+                    completedAt: '2026-10-14T12:10:02Z'
+                    error: null
+                timedOut:
+                  summary: Устройство не ответило
+                  value:
+                    id: 4a7d2e9b-0c1f-4b3a-8e6d-5f4a3b2c1d0e
+                    deviceId: 9e2b6c41-7d3a-4f5e-8a1b-0c9d8e7f6a52
+                    name: turn_off
+                    params: {}
+                    source: USER
+                    status: TIMED_OUT
+                    createdAt: '2026-10-14T13:00:00Z'
+                    completedAt: '2026-10-14T13:00:30Z'
+                    error: Нет подтверждения от устройства за 30 секунд
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Устройство или команда не найдены
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /device-types:
+    post:
+      tags: [device-types]
+      operationId: createDeviceType
+      summary: Зарегистрировать новый тип устройства
+      description: |
+        Так подключаются новые, ранее неизвестные датчики и устройства партнёров: администратор
+        описывает поддерживаемые команды и метрики телеметрии, после чего устройства этого типа
+        можно подключать без изменения кода сервисов. Доступно роли `ADMIN`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeviceTypeCreate'
+            examples:
+              leakSensor:
+                summary: Датчик протечки партнёра
+                value:
+                  code: leak_sensor_aqara
+                  name: Датчик протечки Aqara
+                  category: SENSOR
+                  domain: sensor
+                  manufacturer: Aqara
+                  protocol: ZIGBEE
+                  capabilities:
+                    - name: self_test
+                      paramsSchema: { type: object, properties: {} }
+                  telemetry:
+                    - metric: leak
+                      unit: bool
+                    - metric: battery
+                      unit: '%'
+                      min: 0
+                      max: 100
+      responses:
+        '201':
+          description: Тип устройства создан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceType'
+              examples:
+                created:
+                  value:
+                    id: 2c8e4f6a-1b3d-4a5c-9e7f-0d1c2b3a4f5e
+                    code: leak_sensor_aqara
+                    name: Датчик протечки Aqara
+                    category: SENSOR
+                    domain: sensor
+                    manufacturer: Aqara
+                    protocol: ZIGBEE
+                    capabilities:
+                      - name: self_test
+                        paramsSchema: { type: object, properties: {} }
+                    telemetry:
+                      - metric: leak
+                        unit: bool
+                      - metric: battery
+                        unit: '%'
+                        min: 0
+                        max: 100
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Тип с таким кодом уже существует
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              examples:
+                duplicate:
+                  value:
+                    type: https://api.warmhouse.example/problems/duplicate-device-type
+                    title: Тип устройства уже существует
+                    status: 409
+                    detail: Код leak_sensor_aqara уже занят
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT от IAM Service. Пользователи получают его при входе; микросервисы — по OAuth2
+        client credentials (сервисный токен с ролью `SERVICE`).
+
+  parameters:
+    DeviceId:
+      name: deviceId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    Offset:
+      name: offset
+      in: query
+      schema: { type: integer, minimum: 0, default: 0 }
+
+  schemas:
+    OnboardingRequest:
+      type: object
+      required: [serialNumber, activationCode, houseId, name]
+      properties:
+        serialNumber: { type: string, maxLength: 64 }
+        activationCode: { type: string, maxLength: 32 }
+        houseId: { type: string, format: uuid }
+        roomId: { type: [string, 'null'], format: uuid }
+        name: { type: string, maxLength: 100 }
+
+    OnboardingResponse:
+      type: object
+      required: [device, mqtt]
+      properties:
+        device:
+          $ref: '#/components/schemas/Device'
+        mqtt:
+          $ref: '#/components/schemas/MqttCredentials'
+
+    MqttCredentials:
+      type: object
+      required: [host, port, clientId, username, password, topicPrefix]
+      properties:
+        host: { type: string }
+        port: { type: integer }
+        clientId: { type: string }
+        username: { type: string }
+        password: { type: string, description: Возвращается один раз }
+        topicPrefix:
+          type: string
+          description: Префикс топиков устройства, см. AsyncAPI-контракт device-mqtt
+
+    Device:
+      type: object
+      required: [id, houseId, typeCode, name, serialNumber, status, state, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        houseId: { type: string, format: uuid }
+        roomId: { type: [string, 'null'], format: uuid }
+        typeCode: { type: string }
+        name: { type: string }
+        serialNumber: { type: string }
+        status:
+          type: string
+          enum: [PENDING, ACTIVE, DISABLED]
+          description: PENDING — подключено, но ещё ни разу не выходило на связь
+        state:
+          $ref: '#/components/schemas/DeviceState'
+        createdAt: { type: string, format: date-time }
+
+    DeviceState:
+      type: object
+      required: [online, reported]
+      properties:
+        online: { type: boolean }
+        reported:
+          type: object
+          additionalProperties: true
+          description: Последнее состояние, присланное устройством
+        updatedAt: { type: [string, 'null'], format: date-time }
+
+    DevicePage:
+      type: object
+      required: [items, total, limit, offset]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Device'
+        total: { type: integer }
+        limit: { type: integer }
+        offset: { type: integer }
+
+    SendCommandRequest:
+      type: object
+      required: [name, source]
+      properties:
+        name:
+          type: string
+          description: Имя команды из возможностей типа устройства
+          examples: [turn_on]
+        params:
+          type: object
+          additionalProperties: true
+          default: {}
+        source:
+          $ref: '#/components/schemas/CommandSource'
+
+    CommandSource:
+      type: string
+      enum: [USER, SCENARIO, HEATING, LIGHTING, GATES, SURVEILLANCE]
+
+    Command:
+      type: object
+      required: [id, deviceId, name, params, source, status, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        deviceId: { type: string, format: uuid }
+        name: { type: string }
+        params: { type: object, additionalProperties: true }
+        source:
+          $ref: '#/components/schemas/CommandSource'
+        status:
+          type: string
+          enum: [PENDING, SENT, ACKED, FAILED, TIMED_OUT]
+        createdAt: { type: string, format: date-time }
+        completedAt: { type: [string, 'null'], format: date-time }
+        error: { type: [string, 'null'] }
+
+    Capability:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        paramsSchema:
+          type: object
+          description: JSON Schema параметров команды
+
+    TelemetryMetric:
+      type: object
+      required: [metric, unit]
+      properties:
+        metric: { type: string }
+        unit: { type: string }
+        min: { type: number }
+        max: { type: number }
+
+    DeviceTypeCreate:
+      type: object
+      required: [code, name, category, domain, manufacturer, protocol]
+      properties:
+        code: { type: string, pattern: '^[a-z0-9_]{3,64}$' }
+        name: { type: string }
+        category: { type: string, enum: [SENSOR, ACTUATOR, CAMERA] }
+        domain:
+          type: string
+          enum: [heating, light, gate, camera, sensor]
+          description: Какой доменный сервис отвечает за устройства этого типа; первая часть ключа маршрутизации в `device.events`
+        manufacturer: { type: string }
+        protocol: { type: string, enum: [MQTT, HTTP, ZIGBEE] }
+        capabilities:
+          type: array
+          items:
+            $ref: '#/components/schemas/Capability'
+        telemetry:
+          type: array
+          items:
+            $ref: '#/components/schemas/TelemetryMetric'
+
+    DeviceType:
+      allOf:
+        - type: object
+          required: [id]
+          properties:
+            id: { type: string, format: uuid }
+        - $ref: '#/components/schemas/DeviceTypeCreate'
+
+    Problem:
+      type: object
+      description: Ошибка в формате RFC 7807
+      required: [type, title, status]
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+
+  responses:
+    BadRequest:
+      description: Некорректный запрос
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            validation:
+              value:
+                type: https://api.warmhouse.example/problems/validation
+                title: Некорректный запрос
+                status: 400
+                detail: 'Поле houseId: должно быть UUID'
+    Unauthorized:
+      description: Нет токена или он недействителен
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            noToken:
+              value:
+                type: https://api.warmhouse.example/problems/unauthorized
+                title: Требуется аутентификация
+                status: 401
+    Forbidden:
+      description: Нет доступа к дому или устройству
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            noAccess:
+              value:
+                type: https://api.warmhouse.example/problems/forbidden
+                title: Доступ запрещён
+                status: 403
+                detail: У пользователя нет доступа к дому 6f1c2a9e-1b8e-4a57-9b0e-3a6d2b7c1f10
+    DeviceNotFound:
+      description: Устройство не найдено
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            notFound:
+              value:
+                type: https://api.warmhouse.example/problems/not-found
+                title: Устройство не найдено
+                status: 404
+    InternalError:
+      description: Внутренняя ошибка сервера
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            internal:
+              value:
+                type: https://api.warmhouse.example/problems/internal
+                title: Внутренняя ошибка
+                status: 500

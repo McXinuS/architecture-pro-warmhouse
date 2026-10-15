@@ -1,0 +1,32 @@
+@startuml C4_Component_IAM_Service
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Диаграмма компонентов — IAM Service (Kotlin / Spring Boot)
+
+Container(api_gateway, "API Gateway", "Kong", "Маршрутизация, проверка JWT")
+Container(property_service, "Property Service", "Go", "Роли в домах")
+ContainerDb(iam_db, "IAM DB", "PostgreSQL", "Пользователи, роли, токены")
+
+Container_Boundary(iam_service, "IAM Service") {
+    Component(auth_api, "Auth REST API", "Spring MVC", "Регистрация, вход, обновление токена, выход")
+    Component(user_api, "User REST API", "Spring MVC", "Профиль, контакты, настройки уведомлений")
+    Component(credential_service, "Credential Service", "Spring Security", "Хеширование паролей, 2FA, восстановление доступа")
+    Component(token_service, "Token Service", "Spring Security", "Выпуск и отзыв JWT/refresh-токенов, публикация JWKS")
+    Component(role_service, "Role & Permission Service", "Spring Service", "Роли: владелец, член семьи, гость, сервисный инженер, администратор посёлка")
+    Component(user_repository, "User Repository", "Spring Data JPA", "Хранение пользователей, ролей и токенов")
+}
+
+Rel(api_gateway, auth_api, "Вход, обновление токена", "REST")
+Rel(api_gateway, user_api, "Профиль", "REST")
+Rel(api_gateway, token_service, "Получает JWKS для проверки подписи", "HTTPS")
+Rel(auth_api, credential_service, "Проверка пароля / 2FA")
+Rel(auth_api, token_service, "Выпуск токенов")
+Rel(user_api, user_repository, "CRUD")
+Rel(credential_service, user_repository, "Читает/пишет")
+Rel(token_service, role_service, "Роли в claims")
+Rel(role_service, property_service, "Роли в конкретных домах", "REST")
+Rel(user_repository, iam_db, "Читает/пишет", "SQL")
+
+@enduml

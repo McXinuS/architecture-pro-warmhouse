@@ -1,0 +1,37 @@
+@startuml C4_Component_Gates_Service
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Диаграмма компонентов — Gates Service (Go)
+
+Container(api_gateway, "API Gateway", "Kong", "Запросы пользователей")
+Container(device_service, "Device Management Service", "Kotlin", "Единая точка отправки команд")
+ContainerQueue(broker, "Message Broker", "RabbitMQ", "device.events, notifications")
+ContainerDb(gates_db, "Gates DB", "PostgreSQL", "Доступы, журнал событий")
+
+Container_Boundary(gates_service, "Gates Service") {
+    Component(rest_api, "Gates REST API", "Go, net/http", "Открыть/закрыть ворота, гостевые доступы, журнал въездов")
+    Component(gate_controller, "Gate Controller", "Go", "Проверяет права и текущее состояние, формирует команду open/close")
+    Component(permission_manager, "Gate Permission Manager", "Go", "Постоянные и временные (гостевые) доступы")
+    Component(event_consumer, "Gate Event Consumer", "Go, amqp091-go", "Очередь device.events с ключом gate.*: открыто, закрыто, препятствие")
+    Component(access_journal, "Access Journal", "Go", "Журнал въездов/выездов")
+    Component(device_client, "Device Command Client", "Go", "Отправляет команды через Device Management Service")
+    Component(alert_publisher, "Alert Publisher", "Go, amqp091-go", "Уведомления: ворота открыты в отсутствие жильцов, не закрылись")
+}
+
+Rel(api_gateway, rest_api, "Вызывает", "REST / JSON")
+Rel(rest_api, gate_controller, "Открыть / закрыть")
+Rel(rest_api, permission_manager, "Гостевые доступы")
+Rel(rest_api, access_journal, "Журнал")
+Rel(gate_controller, permission_manager, "Проверка прав")
+Rel(gate_controller, device_client, "Команда")
+Rel(device_client, device_service, "POST /devices/{id}/commands", "REST")
+Rel(event_consumer, access_journal, "Записывает событие")
+Rel(event_consumer, alert_publisher, "Подозрительное событие")
+Rel(permission_manager, gates_db, "SQL")
+Rel(access_journal, gates_db, "SQL")
+Rel(broker, event_consumer, "device.events", "AMQP")
+Rel(alert_publisher, broker, "notifications", "AMQP")
+
+@enduml

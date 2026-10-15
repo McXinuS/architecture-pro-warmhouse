@@ -1,0 +1,32 @@
+@startuml C4_Component_Property_Service
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Диаграмма компонентов — Property Service (Go)
+
+Container(api_gateway, "API Gateway", "Kong", "Запросы пользователей")
+Container(device_service, "Device Management Service", "Kotlin", "Проверка доступа к дому")
+Container(iam_service, "IAM Service", "Kotlin", "Пользователи")
+ContainerDb(property_db, "Property DB", "PostgreSQL", "Посёлки, дома, помещения, участники")
+
+Container_Boundary(property_service, "Property Service") {
+    Component(rest_api, "Property REST API", "Go, net/http", "CRUD посёлков, домов и помещений; приглашение участников")
+    Component(hierarchy_service, "Hierarchy Service", "Go", "Иерархия: посёлок → дом → помещение")
+    Component(membership_service, "House Membership Service", "Go", "Участники дома и их роли, приглашения по коду")
+    Component(access_check_api, "Access Check API", "Go, net/http", "Проверка «есть ли у пользователя доступ к дому» для других сервисов")
+    Component(repository, "Property Repository", "Go, pgx", "Хранение сущностей и связей")
+}
+
+Rel(api_gateway, rest_api, "Вызывает", "REST / JSON")
+Rel(device_service, access_check_api, "Проверка доступа", "REST")
+Rel(iam_service, access_check_api, "Роли в домах", "REST")
+Rel(rest_api, hierarchy_service, "Структура")
+Rel(rest_api, membership_service, "Участники")
+Rel(membership_service, iam_service, "Поиск пользователя", "REST")
+Rel(access_check_api, membership_service, "Роль пользователя")
+Rel(hierarchy_service, repository, "CRUD")
+Rel(membership_service, repository, "CRUD")
+Rel(repository, property_db, "SQL")
+
+@enduml

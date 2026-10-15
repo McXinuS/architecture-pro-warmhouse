@@ -1,0 +1,304 @@
+openapi: 3.1.0
+info:
+  title: Heating Service API
+  version: 1.0.0
+  description: |
+    Управление отоплением дома: включение и выключение, целевая температура по помещениям.
+    Команды котлу и реле сервис отправляет через Device Management Service, поэтому изменения
+    применяются асинхронно (`202 Accepted`).
+
+    Реализация: Go.
+servers:
+  - url: https://api.warmhouse.example/api/v1
+    description: Через API Gateway
+security:
+  - bearerAuth: []
+tags:
+  - name: heating
+
+paths:
+  /houses/{houseId}/heating:
+    parameters:
+      - $ref: '#/components/parameters/HouseId'
+    get:
+      tags: [heating]
+      operationId: getHeating
+      summary: Состояние отопления дома
+      responses:
+        '200':
+          description: Состояние отопления
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HeatingState'
+              examples:
+                winterEvening:
+                  value:
+                    houseId: 6f1c2a9e-1b8e-4a57-9b0e-3a6d2b7c1f10
+                    power: 'ON'
+                    mode: COMFORT
+                    boilerActive: true
+                    rooms:
+                      - roomId: 0b5d7c1e-2f4a-4c3b-8e9d-1a2b3c4d5e6f
+                        name: Гостиная
+                        currentTemp: 19.6
+                        targetTemp: 21.0
+                      - roomId: 5a4b3c2d-1e0f-4a9b-8c7d-6e5f4a3b2c1d
+                        name: Спальня
+                        currentTemp: 20.2
+                        targetTemp: 20.0
+                    updatedAt: '2026-10-14T18:00:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/HouseNotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /houses/{houseId}/heating/power:
+    parameters:
+      - $ref: '#/components/parameters/HouseId'
+    put:
+      tags: [heating]
+      operationId: setHeatingPower
+      summary: Включить или выключить отопление
+      description: |
+        При выключении защита от замерзания продолжает работать: если температура в помещении
+        опустится ниже 5 °C, сервис включит котёл принудительно и уведомит владельца.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PowerRequest'
+            examples:
+              turnOn:
+                value: { power: 'ON' }
+              turnOff:
+                value: { power: 'OFF' }
+      responses:
+        '202':
+          description: Команда принята; котёл переключится после подтверждения устройством
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HeatingChangeAccepted'
+              examples:
+                accepted:
+                  value:
+                    houseId: 6f1c2a9e-1b8e-4a57-9b0e-3a6d2b7c1f10
+                    power: 'ON'
+                    commands:
+                      - deviceId: 9e2b6c41-7d3a-4f5e-8a1b-0c9d8e7f6a52
+                        commandId: c1f4e8a2-6b3d-4e7f-9a0b-1c2d3e4f5a6b
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/HouseNotFound'
+        '409':
+          description: В доме нет подключённых устройств отопления или они офлайн
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              examples:
+                noBoiler:
+                  value:
+                    type: https://api.warmhouse.example/problems/no-heating-devices
+                    title: Нет устройств отопления
+                    status: 409
+                    detail: Реле котла не на связи
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: Device Management Service недоступен; повторите позже
+          headers:
+            Retry-After:
+              schema: { type: integer }
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /houses/{houseId}/heating/rooms/{roomId}/target:
+    parameters:
+      - $ref: '#/components/parameters/HouseId'
+      - name: roomId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    put:
+      tags: [heating]
+      operationId: setRoomTarget
+      summary: Задать целевую температуру помещения
+      description: |
+        Целевая температура сохраняется в текущем профиле. Котёл включается и выключается
+        автоматически, когда приходит новая телеметрия (гистерезис профиля, по умолчанию 0,5 °C).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TargetRequest'
+            examples:
+              warmer:
+                value: { targetTemp: 22.5 }
+      responses:
+        '200':
+          description: Целевая температура сохранена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoomHeating'
+              examples:
+                saved:
+                  value:
+                    roomId: 0b5d7c1e-2f4a-4c3b-8e9d-1a2b3c4d5e6f
+                    name: Гостиная
+                    currentTemp: 19.6
+                    targetTemp: 22.5
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Дом или помещение не найдены
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Температура вне допустимого диапазона 5–30 °C
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              examples:
+                tooHot:
+                  value:
+                    type: https://api.warmhouse.example/problems/target-out-of-range
+                    title: Недопустимая температура
+                    status: 422
+                    detail: Целевая температура должна быть от 5 до 30 °C
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    HouseId:
+      name: houseId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  schemas:
+    HeatingState:
+      type: object
+      required: [houseId, power, mode, boilerActive, rooms, updatedAt]
+      properties:
+        houseId: { type: string, format: uuid }
+        power: { type: string, enum: ['ON', 'OFF'] }
+        mode: { type: string, enum: [COMFORT, ECO, AWAY] }
+        boilerActive:
+          type: boolean
+          description: Котёл сейчас греет (решение терморегулятора)
+        rooms:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoomHeating'
+        updatedAt: { type: string, format: date-time }
+
+    RoomHeating:
+      type: object
+      required: [roomId, name, targetTemp]
+      properties:
+        roomId: { type: string, format: uuid }
+        name: { type: string }
+        currentTemp:
+          type: [number, 'null']
+          description: Последнее значение датчика; null, если датчика в помещении нет
+        targetTemp: { type: number }
+
+    PowerRequest:
+      type: object
+      required: [power]
+      properties:
+        power: { type: string, enum: ['ON', 'OFF'] }
+
+    TargetRequest:
+      type: object
+      required: [targetTemp]
+      properties:
+        targetTemp: { type: number, multipleOf: 0.5 }
+
+    HeatingChangeAccepted:
+      type: object
+      required: [houseId, power, commands]
+      properties:
+        houseId: { type: string, format: uuid }
+        power: { type: string, enum: ['ON', 'OFF'] }
+        commands:
+          type: array
+          description: Команды, созданные в Device Management Service
+          items:
+            type: object
+            required: [deviceId, commandId]
+            properties:
+              deviceId: { type: string, format: uuid }
+              commandId: { type: string, format: uuid }
+
+    Problem:
+      type: object
+      description: Ошибка в формате RFC 7807
+      required: [type, title, status]
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+
+  responses:
+    BadRequest:
+      description: Некорректный запрос
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Unauthorized:
+      description: Нет токена или он недействителен
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Forbidden:
+      description: Нет доступа к дому
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    HouseNotFound:
+      description: Дом не найден
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    InternalError:
+      description: Внутренняя ошибка сервера
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'

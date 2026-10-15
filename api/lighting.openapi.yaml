@@ -1,0 +1,164 @@
+openapi: 3.1.0
+info:
+  title: Lighting Service API
+  version: 1.0.0
+  description: |
+    Управление освещением: включение, выключение и яркость светильника.
+    Команды отправляются через Device Management Service, поэтому ответ — `202 Accepted`.
+
+    Реализация: Go.
+servers:
+  - url: https://api.warmhouse.example/api/v1
+    description: Через API Gateway
+security:
+  - bearerAuth: []
+tags:
+  - name: lighting
+
+paths:
+  /houses/{houseId}/lighting/lights/{deviceId}/state:
+    parameters:
+      - name: houseId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: deviceId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    put:
+      tags: [lighting]
+      operationId: setLightState
+      summary: Включить, выключить светильник или изменить яркость
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LightStateRequest'
+            examples:
+              turnOn:
+                summary: Включить на 70 %
+                value: { power: 'ON', brightness: 70 }
+              turnOff:
+                summary: Выключить
+                value: { power: 'OFF' }
+      responses:
+        '202':
+          description: Команда принята
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LightStateAccepted'
+              examples:
+                accepted:
+                  value:
+                    deviceId: 7b6a5c4d-3e2f-4a1b-9c8d-7e6f5a4b3c2d
+                    requested: { power: 'ON', brightness: 70 }
+                    commandId: 1e2d3c4b-5a69-4788-9a0b-c1d2e3f4a5b6
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Дом или светильник не найдены
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: Светильник офлайн
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              examples:
+                offline:
+                  value:
+                    type: https://api.warmhouse.example/problems/device-offline
+                    title: Устройство недоступно
+                    status: 409
+        '422':
+          description: Светильник не поддерживает регулировку яркости
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              examples:
+                noDimming:
+                  value:
+                    type: https://api.warmhouse.example/problems/unsupported-command
+                    title: Яркость не регулируется
+                    status: 422
+                    detail: Тип light_switch поддерживает только включение и выключение
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    LightStateRequest:
+      type: object
+      required: [power]
+      properties:
+        power: { type: string, enum: ['ON', 'OFF'] }
+        brightness:
+          type: integer
+          minimum: 1
+          maximum: 100
+          description: Только для power=ON и светильников с регулировкой яркости
+
+    LightStateAccepted:
+      type: object
+      required: [deviceId, requested, commandId]
+      properties:
+        deviceId: { type: string, format: uuid }
+        requested:
+          $ref: '#/components/schemas/LightStateRequest'
+        commandId:
+          type: string
+          format: uuid
+          description: Команда в Device Management Service
+
+    Problem:
+      type: object
+      description: Ошибка в формате RFC 7807
+      required: [type, title, status]
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+
+  responses:
+    BadRequest:
+      description: Некорректный запрос
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Unauthorized:
+      description: Нет токена или он недействителен
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Forbidden:
+      description: Нет доступа к дому
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    InternalError:
+      description: Внутренняя ошибка сервера
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'

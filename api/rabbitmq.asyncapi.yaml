@@ -1,0 +1,603 @@
+asyncapi: 3.0.0
+info:
+  title: Warmhouse Event Bus (RabbitMQ)
+  version: 1.0.0
+  description: |
+    Асинхронное взаимодействие микросервисов экосистемы «Тёплый дом» через RabbitMQ.
+
+    Все exchanges имеют тип `topic`. Каждый сервис-потребитель объявляет свою очередь и привязывает её
+    к exchange по нужным ключам маршрутизации; несколько экземпляров одного сервиса читают одну очередь
+    (competing consumers). Сообщения публикуются как persistent (`deliveryMode: 2`), с publisher confirms;
+    потребители подтверждают сообщение (`ack`) только после обработки.
+
+    Документ описывает шину целиком: каждая операция — публикация со стороны сервиса-отправителя,
+    потребители и их привязки перечислены в описании операции.
+defaultContentType: application/json
+
+servers:
+  rabbitmq:
+    host: rabbitmq:5672
+    protocol: amqp
+    protocolVersion: 0.9.1
+    description: RabbitMQ внутри кластера, vhost `/warmhouse`
+    security:
+      - $ref: '#/components/securitySchemes/serviceUser'
+
+channels:
+  telemetryRaw:
+    title: telemetry.raw
+    address: '{deviceType}.{deviceId}'
+    description: Сырая телеметрия от устройств в каноничном формате Device Gateway
+    parameters:
+      deviceType:
+        $ref: '#/components/parameters/deviceType'
+      deviceId:
+        $ref: '#/components/parameters/deviceId'
+    messages:
+      telemetryRaw:
+        $ref: '#/components/messages/TelemetryRaw'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: telemetry.raw
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /warmhouse
+        bindingVersion: 0.3.0
+
+  telemetryNormalized:
+    title: telemetry.normalized
+    address: '{metric}.{deviceType}'
+    description: Проверенная телеметрия в единых единицах, по одной метрике в сообщении
+    parameters:
+      metric:
+        $ref: '#/components/parameters/metric'
+      deviceType:
+        $ref: '#/components/parameters/deviceType'
+    messages:
+      telemetryNormalized:
+        $ref: '#/components/messages/TelemetryNormalized'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: telemetry.normalized
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /warmhouse
+        bindingVersion: 0.3.0
+
+  deviceCommands:
+    title: device.commands
+    address: '{deviceType}.{deviceId}'
+    description: Команды устройствам, принятые и проверенные Device Management Service
+    parameters:
+      deviceType:
+        $ref: '#/components/parameters/deviceType'
+      deviceId:
+        $ref: '#/components/parameters/deviceId'
+    messages:
+      deviceCommand:
+        $ref: '#/components/messages/DeviceCommand'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: device.commands
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /warmhouse
+        bindingVersion: 0.3.0
+
+  deviceEvents:
+    title: device.events
+    address: '{deviceDomain}.{eventType}'
+    description: События устройств — подключение, отключение, смена состояния, результат команды, движение
+    parameters:
+      deviceDomain:
+        $ref: '#/components/parameters/deviceDomain'
+      eventType:
+        $ref: '#/components/parameters/eventType'
+    messages:
+      deviceEvent:
+        $ref: '#/components/messages/DeviceEvent'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: device.events
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /warmhouse
+        bindingVersion: 0.3.0
+
+  legacySensors:
+    title: legacy.sensors
+    address: 'sensor.{eventType}'
+    description: |
+      Переходный канал на время миграции: изменения датчиков в монолите. Удаляется вместе
+      с таблицей `sensors`, когда клиенты переключатся на Device Management Service.
+    parameters:
+      eventType:
+        $ref: '#/components/parameters/legacyEventType'
+    messages:
+      legacySensorEvent:
+        $ref: '#/components/messages/LegacySensorEvent'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: legacy.sensors
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /warmhouse
+        bindingVersion: 0.3.0
+
+  notifications:
+    title: notifications
+    address: '{severity}'
+    description: Запросы на отправку уведомлений пользователям
+    parameters:
+      severity:
+        $ref: '#/components/parameters/severity'
+    messages:
+      notification:
+        $ref: '#/components/messages/Notification'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: notifications
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /warmhouse
+        bindingVersion: 0.3.0
+
+operations:
+  publishTelemetryRaw:
+    action: send
+    channel:
+      $ref: '#/channels/telemetryRaw'
+    title: Device Gateway публикует сырую телеметрию
+    description: |
+      **Публикует:** Device Gateway — после разбора MQTT/HTTP-сообщения адаптером протокола.
+      На время миграции также монолит — после каждого опроса temperature-api (`protocol: HTTP`).
+
+      **Читает:** Telemetry Service — очередь `telemetry.ingest`, привязка `#`.
+    messages:
+      - $ref: '#/channels/telemetryRaw/messages/telemetryRaw'
+    bindings:
+      amqp:
+        deliveryMode: 2
+        mandatory: true
+        bindingVersion: 0.3.0
+
+  publishTelemetryNormalized:
+    action: send
+    channel:
+      $ref: '#/channels/telemetryNormalized'
+    title: Telemetry Service публикует нормализованную телеметрию
+    description: |
+      **Публикует:** Telemetry Service — после валидации, нормализации и записи в TimescaleDB.
+
+      **Читают:**
+      - Heating Service — очередь `heating.temperature`, привязка `temperature.*`;
+      - Scenario Service — очередь `scenario.telemetry`, привязка `#`.
+    messages:
+      - $ref: '#/channels/telemetryNormalized/messages/telemetryNormalized'
+    bindings:
+      amqp:
+        deliveryMode: 2
+        bindingVersion: 0.3.0
+
+  publishDeviceCommand:
+    action: send
+    channel:
+      $ref: '#/channels/deviceCommands'
+    title: Device Management Service публикует команду устройству
+    description: |
+      **Публикует:** Device Management Service — Outbox Publisher, после сохранения команды в БД.
+      Сообщение помечается отправленным только после publisher confirm от RabbitMQ.
+
+      **Читает:** Device Gateway — очередь `gateway.commands`, привязка `#`.
+      Через 30 секунд непрочитанная команда удаляется из очереди (TTL), а Device Management
+      переводит её в статус `TIMED_OUT`, если не пришло подтверждение.
+    messages:
+      - $ref: '#/channels/deviceCommands/messages/deviceCommand'
+    bindings:
+      amqp:
+        deliveryMode: 2
+        mandatory: true
+        expiration: 30000
+        bindingVersion: 0.3.0
+
+  publishDeviceEvent:
+    action: send
+    channel:
+      $ref: '#/channels/deviceEvents'
+    title: Device Gateway публикует событие устройства
+    description: |
+      **Публикует:** Device Gateway — по сообщениям устройств в MQTT-топики `state`, `availability`,
+      `commands/ack` и по отключению клиента от брокера.
+
+      **Читают:**
+      - Device Management Service — очередь `devices.events`, привязка `#`;
+      - Lighting Service — очередь `lighting.events`, привязка `light.*`;
+      - Gates Service — очередь `gates.events`, привязка `gate.*`;
+      - Surveillance Service — очередь `surveillance.events`, привязка `camera.*`;
+      - Scenario Service — очередь `scenario.events`, привязка `#`.
+    messages:
+      - $ref: '#/channels/deviceEvents/messages/deviceEvent'
+    bindings:
+      amqp:
+        deliveryMode: 2
+        bindingVersion: 0.3.0
+
+  publishLegacySensorEvent:
+    action: send
+    channel:
+      $ref: '#/channels/legacySensors'
+    title: Монолит публикует изменения датчиков
+    description: |
+      **Публикует:** монолит `smart_home` — после создания, изменения и удаления датчика.
+
+      **Читает:** Device Management Service — очередь `devices.legacy-sensors`, привязка `sensor.*`.
+      Устройство создаётся или обновляется с `id = deviceId`, при удалении датчика переводится в `DISABLED`.
+    messages:
+      - $ref: '#/channels/legacySensors/messages/legacySensorEvent'
+    bindings:
+      amqp:
+        deliveryMode: 2
+        bindingVersion: 0.3.0
+
+  publishNotification:
+    action: send
+    channel:
+      $ref: '#/channels/notifications'
+    title: Сервисы запрашивают отправку уведомления
+    description: |
+      **Публикуют:** Heating (угроза замерзания), Gates (ворота не закрылись, открыты в отсутствие
+      жильцов), Surveillance (движение, камера офлайн), Scenario (действие NOTIFY).
+
+      **Читает:** Notification Service — очередь `notifications.send`, привязка `#`.
+      Повторные уведомления с тем же `dedupKey` в течение 10 минут не отправляются.
+    messages:
+      - $ref: '#/channels/notifications/messages/notification'
+    bindings:
+      amqp:
+        deliveryMode: 2
+        bindingVersion: 0.3.0
+
+components:
+  securitySchemes:
+    serviceUser:
+      type: userPassword
+      description: У каждого микросервиса свой пользователь RabbitMQ с правами только на свои exchanges и очереди
+
+  parameters:
+    deviceType:
+      description: Код типа устройства из Device Management Service
+      examples: [temp_sensor, heating_relay, light_dimmer, gate_drive, ip_camera]
+    deviceId:
+      description: UUID устройства
+      examples: [3d9a7b52-4c1e-4f8a-9b6d-2e7f1a0c5b84]
+    deviceDomain:
+      description: Домен типа устройства (`DeviceType.domain`); по нему доменные сервисы фильтруют события
+      enum: [heating, light, gate, camera, sensor]
+    eventType:
+      description: Тип события устройства
+      enum: [online, offline, state_changed, command_acked, command_failed, motion_detected]
+    metric:
+      description: Метрика телеметрии
+      examples: [temperature, humidity, power, battery, leak]
+    severity:
+      description: Важность уведомления
+      enum: [info, warning, critical]
+    legacyEventType:
+      description: Что произошло с датчиком в монолите
+      enum: [created, updated, deleted]
+
+  messages:
+    TelemetryRaw:
+      name: TelemetryRaw
+      title: Сырая телеметрия
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/TelemetryRaw'
+      bindings:
+        amqp:
+          messageType: telemetry.raw
+          bindingVersion: 0.3.0
+      examples:
+        - name: temperatureSensor
+          summary: Датчик температуры прислал два значения
+          payload:
+            messageId: 0f1e2d3c-4b5a-4968-8776-5a4b3c2d1e0f
+            deviceId: 3d9a7b52-4c1e-4f8a-9b6d-2e7f1a0c5b84
+            deviceType: temp_sensor
+            houseId: 6f1c2a9e-1b8e-4a57-9b0e-3a6d2b7c1f10
+            protocol: MQTT
+            ts: '2026-10-14T12:05:00Z'
+            receivedAt: '2026-10-14T12:05:00.412Z'
+            readings:
+              - metric: temperature
+                value: 16.5
+                unit: °C
+              - metric: humidity
+                value: 43
+                unit: '%'
+
+    TelemetryNormalized:
+      name: TelemetryNormalized
+      title: Нормализованная телеметрия
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/TelemetryNormalized'
+      bindings:
+        amqp:
+          messageType: telemetry.normalized
+          bindingVersion: 0.3.0
+      examples:
+        - name: livingRoomTemperature
+          summary: Температура в гостиной
+          payload:
+            messageId: 7a6b5c4d-3e2f-4109-8a7b-6c5d4e3f2a1b
+            deviceId: 3d9a7b52-4c1e-4f8a-9b6d-2e7f1a0c5b84
+            deviceType: temp_sensor
+            houseId: 6f1c2a9e-1b8e-4a57-9b0e-3a6d2b7c1f10
+            roomId: 0b5d7c1e-2f4a-4c3b-8e9d-1a2b3c4d5e6f
+            metric: temperature
+            value: 16.5
+            unit: °C
+            ts: '2026-10-14T12:05:00Z'
+
+    DeviceCommand:
+      name: DeviceCommand
+      title: Команда устройству
+      contentType: application/json
+      correlationId:
+        description: Ответ устройства (событие command_acked / command_failed) содержит тот же commandId
+        location: $message.payload#/commandId
+      payload:
+        $ref: '#/components/schemas/DeviceCommand'
+      bindings:
+        amqp:
+          messageType: device.command
+          bindingVersion: 0.3.0
+      examples:
+        - name: boilerOn
+          summary: Heating Service включает котёл
+          payload:
+            commandId: c1f4e8a2-6b3d-4e7f-9a0b-1c2d3e4f5a6b
+            deviceId: 9e2b6c41-7d3a-4f5e-8a1b-0c9d8e7f6a52
+            deviceType: heating_relay
+            houseId: 6f1c2a9e-1b8e-4a57-9b0e-3a6d2b7c1f10
+            name: turn_on
+            params: {}
+            source: HEATING
+            issuedAt: '2026-10-14T12:10:00Z'
+            expiresAt: '2026-10-14T12:10:30Z'
+
+    DeviceEvent:
+      name: DeviceEvent
+      title: Событие устройства
+      contentType: application/json
+      correlationId:
+        description: Для command_acked и command_failed — идентификатор команды
+        location: $message.payload#/commandId
+      payload:
+        $ref: '#/components/schemas/DeviceEvent'
+      bindings:
+        amqp:
+          messageType: device.event
+          bindingVersion: 0.3.0
+      examples:
+        - name: commandAcked
+          summary: Реле подтвердило включение котла
+          payload:
+            eventId: 2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e
+            eventType: command_acked
+            deviceId: 9e2b6c41-7d3a-4f5e-8a1b-0c9d8e7f6a52
+            deviceType: heating_relay
+            deviceDomain: heating
+            houseId: 6f1c2a9e-1b8e-4a57-9b0e-3a6d2b7c1f10
+            occurredAt: '2026-10-14T12:10:02Z'
+            commandId: c1f4e8a2-6b3d-4e7f-9a0b-1c2d3e4f5a6b
+            state: { power: 'on' }
+        - name: gateOffline
+          summary: Привод ворот отключился от брокера
+          payload:
+            eventId: 8d9e0f1a-2b3c-4d4e-8f5a-6b7c8d9e0f1a
+            eventType: offline
+            deviceId: 8c7b6a5d-4e3f-4a2b-9c1d-0e9f8a7b6c5d
+            deviceType: gate_drive
+            deviceDomain: gate
+            houseId: 6f1c2a9e-1b8e-4a57-9b0e-3a6d2b7c1f10
+            occurredAt: '2026-10-14T13:00:00Z'
+        - name: motion
+          summary: Камера на въезде зафиксировала движение
+          payload:
+            eventId: 4e5f6a7b-8c9d-4e0f-9a1b-2c3d4e5f6a7b
+            eventType: motion_detected
+            deviceId: 1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f
+            deviceType: ip_camera
+            deviceDomain: camera
+            houseId: 6f1c2a9e-1b8e-4a57-9b0e-3a6d2b7c1f10
+            occurredAt: '2026-10-14T23:41:17Z'
+            state: { zone: entrance, snapshotUrl: 'https://media.warmhouse.example/snap/4e5f6a7b.jpg' }
+
+    LegacySensorEvent:
+      name: LegacySensorEvent
+      title: Изменение датчика в монолите
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/LegacySensorEvent'
+      bindings:
+        amqp:
+          messageType: legacy.sensor.created
+          bindingVersion: 0.3.0
+      examples:
+        - name: sensorCreated
+          summary: В монолите создан датчик температуры
+          payload:
+            eventType: created
+            deviceId: f9b6aaf8-ee9e-4710-b632-c4dc6f2d2c87
+            legacySensorId: 1
+            houseId: 00000000-0000-0000-0000-000000000001
+            name: Living Room Temperature
+            type: temperature
+            location: Living Room
+            unit: °C
+            occurredAt: '2026-10-14T17:37:48Z'
+
+    Notification:
+      name: Notification
+      title: Запрос на уведомление
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/Notification'
+      bindings:
+        amqp:
+          messageType: notification
+          bindingVersion: 0.3.0
+      examples:
+        - name: freezeRisk
+          summary: Угроза замерзания
+          payload:
+            notificationId: 5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f
+            type: FREEZE_RISK
+            severity: critical
+            houseId: 6f1c2a9e-1b8e-4a57-9b0e-3a6d2b7c1f10
+            recipientRoles: [OWNER, FAMILY]
+            title: Угроза замерзания
+            message: В гостиной 4.5 °C. Котёл включён принудительно.
+            source: heating-service
+            dedupKey: freeze:6f1c2a9e:0b5d7c1e
+            occurredAt: '2026-10-14T03:12:00Z'
+
+  schemas:
+    Reading:
+      type: object
+      required: [metric, value]
+      properties:
+        metric: { type: string }
+        value: { type: number }
+        unit: { type: string }
+
+    TelemetryRaw:
+      type: object
+      required: [messageId, deviceId, deviceType, houseId, protocol, ts, receivedAt, readings]
+      properties:
+        messageId: { type: string, format: uuid, description: Для дедупликации в Telemetry Service }
+        deviceId: { type: string, format: uuid }
+        deviceType: { type: string }
+        houseId: { type: string, format: uuid }
+        protocol: { type: string, enum: [MQTT, HTTP, ZIGBEE] }
+        ts: { type: string, format: date-time, description: Время измерения на устройстве }
+        receivedAt: { type: string, format: date-time, description: Время приёма Device Gateway }
+        readings:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/Reading'
+
+    TelemetryNormalized:
+      type: object
+      required: [messageId, deviceId, deviceType, houseId, metric, value, unit, ts]
+      properties:
+        messageId: { type: string, format: uuid }
+        deviceId: { type: string, format: uuid }
+        deviceType: { type: string }
+        houseId: { type: string, format: uuid }
+        roomId: { type: [string, 'null'], format: uuid }
+        metric: { type: string }
+        value: { type: number }
+        unit: { type: string, description: 'Единая единица: °C, %, лк, Вт' }
+        ts: { type: string, format: date-time }
+
+    DeviceCommand:
+      type: object
+      required: [commandId, deviceId, deviceType, houseId, name, params, source, issuedAt, expiresAt]
+      properties:
+        commandId: { type: string, format: uuid }
+        deviceId: { type: string, format: uuid }
+        deviceType: { type: string }
+        houseId: { type: string, format: uuid }
+        name: { type: string }
+        params: { type: object, additionalProperties: true }
+        source:
+          type: string
+          enum: [USER, SCENARIO, HEATING, LIGHTING, GATES, SURVEILLANCE]
+        issuedAt: { type: string, format: date-time }
+        expiresAt:
+          type: string
+          format: date-time
+          description: После этого момента Device Gateway не отправляет команду устройству
+
+    DeviceEvent:
+      type: object
+      required: [eventId, eventType, deviceId, deviceType, deviceDomain, houseId, occurredAt]
+      properties:
+        eventId: { type: string, format: uuid }
+        eventType:
+          type: string
+          enum: [online, offline, state_changed, command_acked, command_failed, motion_detected]
+        deviceId: { type: string, format: uuid }
+        deviceType: { type: string }
+        deviceDomain: { type: string, enum: [heating, light, gate, camera, sensor] }
+        houseId: { type: string, format: uuid }
+        occurredAt: { type: string, format: date-time }
+        commandId:
+          type: string
+          format: uuid
+          description: Только для command_acked и command_failed
+        state:
+          type: object
+          additionalProperties: true
+          description: Состояние устройства или данные события
+        error:
+          type: string
+          description: Только для command_failed
+
+    LegacySensorEvent:
+      type: object
+      required: [eventType, deviceId, legacySensorId, houseId, name, type, location, occurredAt]
+      properties:
+        eventType: { type: string, enum: [created, updated, deleted] }
+        deviceId: { type: string, format: uuid, description: Колонка `sensors.device_id`; под этим id устройство известно новым сервисам }
+        legacySensorId: { type: integer, description: Колонка `sensors.id` }
+        houseId:
+          type: string
+          format: uuid
+          description: В монолите нет домов, все датчики относятся к условному дому 00000000-0000-0000-0000-000000000001
+        name: { type: string }
+        type: { type: string, description: 'Тип датчика в монолите; temperature соответствует DeviceType temp_sensor' }
+        location: { type: string }
+        unit: { type: string }
+        occurredAt: { type: string, format: date-time }
+
+    Notification:
+      type: object
+      required: [notificationId, type, severity, houseId, recipientRoles, title, message, source, dedupKey, occurredAt]
+      properties:
+        notificationId: { type: string, format: uuid }
+        type:
+          type: string
+          enum: [FREEZE_RISK, GATE_LEFT_OPEN, GATE_OPENED_WHILE_AWAY, MOTION_DETECTED, CAMERA_OFFLINE, SCENARIO]
+        severity: { type: string, enum: [info, warning, critical] }
+        houseId: { type: string, format: uuid }
+        recipientRoles:
+          type: array
+          items: { type: string, enum: [OWNER, FAMILY, GUEST, INSTALLER] }
+        title: { type: string }
+        message: { type: string }
+        source: { type: string, description: Сервис-отправитель }
+        dedupKey: { type: string, description: Ключ для подавления повторов }
+        occurredAt: { type: string, format: date-time }
